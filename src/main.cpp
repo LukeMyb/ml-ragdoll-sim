@@ -187,7 +187,7 @@ bool CheckCollisionSAT(const RigidBody& a, const RigidBody& b, CollisionInfo* ou
     }
 
     int cCount = 0;
-    float tolerance = 0.1f; // 許容誤差（この範囲内の頂点は全て接触しているとみなす）
+    float tolerance = 0.01f; // 許容誤差（この範囲内の頂点は全て接触しているとみなす）
     for (int i = 0; i < 8; i++) {
         float proj = Vector3DotProduct(verticesA[i], smallestAxis);
         if (proj <= minProj + tolerance) {
@@ -402,7 +402,7 @@ int main(void)
         // スリープ判定（0.5秒間、速度が極小なら完全静止させる）
         if (!box.isSleeping) {
             // 速度と角速度がどちらも極めて小さい状態かチェック
-            if (Vector3Length(box.velocity) < 0.1f && Vector3Length(box.angularVelocity) < 0.1f) {
+            if (Vector3Length(box.velocity) < 0.05f && Vector3Length(box.angularVelocity) < 0.05f) {
                 box.sleepTimer += deltaTime;
                 if (box.sleepTimer > 0.5f) { // 0.5秒間ほぼ止まっていたらスリープ状態へ移行
                     box.isSleeping = true;
