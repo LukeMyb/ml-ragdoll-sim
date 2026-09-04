@@ -1,0 +1,31 @@
+name: Sync Issues from TXT
+
+on:
+  push:
+    paths:
+      - 'issues.txt'
+
+# ワークフローの同時実行を防ぎ、順番待ち（キュー）させる
+concurrency:
+  group: "issue-sync"
+  cancel-in-progress: false
+
+jobs:
+  sync-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run sync script
+        env:
+          GH_TOKEN: ${{ secrets.MY_PAT }}
+        run: python .github/scripts/sync_issues.py
