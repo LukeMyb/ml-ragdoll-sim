@@ -1,6 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include <fstream>
 
 // 物理演算用の構造体
 struct RigidBody {
@@ -20,13 +21,14 @@ struct RigidBody {
     bool isStatic = false; // 動かない物体（床など）を判別するフラグ
     
     // 力を加えて速度を変化させる
-    void ApplyForce(Vector3 force) {
+    void ApplyForce(Vector3 force, float deltaTime) {
         if (isStatic) return; // 固定物は力を無視する
 
         // 加速度 = 力 / 質量 (a = F / m)
         Vector3 acceleration = Vector3Scale(force, 1.0f / mass);
-        // 速度 = 速度 + 加速度
-        velocity = Vector3Add(velocity, acceleration);
+        // 速度 = 速度 + (加速度 * 経過時間)
+        Vector3 deltaVel = Vector3Scale(acceleration, deltaTime);
+        velocity = Vector3Add(velocity, deltaVel);
     }
 
     // 速度を使って位置を更新する（1フレームごとの処理）
@@ -102,7 +104,9 @@ struct CollisionInfo {
     bool colliding;
     Vector3 normal; // 押し戻す方向（法線）
     float depth;    // めり込み量
-    Vector3 contactPoint; // ぶつかった点の座標
+
+    Vector3 contactPoints[4];
+    int contactCount;
 };
 
 // SAT（分離軸定理）によるOBB同士の衝突判定
@@ -170,15 +174,23 @@ bool CheckCollisionSAT(const RigidBody& a, const RigidBody& b, CollisionInfo* ou
         smallestAxis = Vector3Scale(smallestAxis, -1.0f);
     }
 
-    // 衝突点の特定（近似）
-    // 押し戻し方向(normal)と「逆向き」に最も深く進んでいるAの頂点を衝突点とする
-    Vector3 contact = verticesA[0];
+    // 接触マニフォールド（多点衝突）の構築
+    // 押し戻し方向と「逆向き」に深く進んでいるAの頂点を「複数」取得する
     float minProj = Vector3DotProduct(verticesA[0], smallestAxis);
     for (int i = 1; i < 8; i++) {
         float proj = Vector3DotProduct(verticesA[i], smallestAxis);
-        if (proj < minProj) {
-            minProj = proj;
-            contact = verticesA[i];
+        if (proj < minProj) minProj = proj;
+    }
+
+    int cCount = 0;
+    float tolerance = 0.1f; // 許容誤差（この範囲内の頂点は全て接触しているとみなす）
+    for (int i = 0; i < 8; i++) {
+        float proj = Vector3DotProduct(verticesA[i], smallestAxis);
+        if (proj <= minProj + tolerance) {
+            if (cCount < 4) {
+                if (outInfo) outInfo->contactPoints[cCount] = verticesA[i];
+                cCount++;
+            }
         }
     }
 
@@ -186,7 +198,7 @@ bool CheckCollisionSAT(const RigidBody& a, const RigidBody& b, CollisionInfo* ou
         outInfo->colliding = true;
         outInfo->normal = smallestAxis;
         outInfo->depth = minOverlap;
-        outInfo->contactPoint = contact;
+        outInfo->contactCount = cCount;
     }
     return true; // すべての軸で重なっていれば衝突
 }
@@ -254,24 +266,46 @@ int main(void)
     Vector3 debugContactPoint = { 0 };
     bool isCollidingThisFrame = false;
 
+    // ログファイルの準備
+    std::ofstream logFile("physics_log.csv");
+    if (logFile.is_open()) {
+        logFile << "Frame,PosY,VelY,Depth,AngularSpeed\n"; // ヘッダ行
+    }
+    int frameCount = 0;
+
     while (!WindowShouldClose())
     {
+        frameCount++; // フレームカウント進行
+
         // 物理演算の更新処理
         float deltaTime = GetFrameTime(); // 前のフレームから何秒経過したか（約0.016秒）
 
         // 重力ベクトルを作成（地球の重力加速度 -9.8 * 質量）
         Vector3 gravity = Vector3{ 0.0f, -9.8f * box.mass, 0.0f };
-        box.ApplyForce(gravity); 
+        box.ApplyForce(gravity, deltaTime);
         box.Update(deltaTime);
 
         // SATによる衝突判定と押し戻し（位置の解決）
         CollisionInfo info;
         isCollidingThisFrame = CheckCollisionSAT(box, floor, &info);
         if (isCollidingThisFrame) {
-            debugContactPoint = info.contactPoint; // 描画用に衝突点を保存
+            // 複数の接触点の「平均位置」を計算する
+            Vector3 averageContact = { 0 };
+            for (int i = 0; i < info.contactCount; i++) {
+                averageContact = Vector3Add(averageContact, info.contactPoints[i]);
+            }
+            averageContact = Vector3Scale(averageContact, 1.0f / (float)info.contactCount);
+            debugContactPoint = averageContact; // 平均位置を中心としてインパルスを計算する
+
+            // Baumgarte安定化による位置の押し戻し
+            const float slop = 0.01f;     // 微小なめり込みは無視する
+            const float percent = 0.8f;
+            
+            float penetration = info.depth - slop;
+            if (penetration < 0.0f) penetration = 0.0f;
 
             // 位置の押し戻し（めり込み解消）
-            Vector3 correction = Vector3Scale(info.normal, info.depth);
+            Vector3 correction = Vector3Scale(info.normal, penetration * percent);
             box.position = Vector3Add(box.position, correction);
             debugContactPoint = Vector3Add(debugContactPoint, correction); // 青い球も一緒に移動
 
@@ -288,6 +322,16 @@ int main(void)
             // 互いに近づいている（めり込もうとしている）場合のみ跳ね返り計算を行う
             if (relVelAlongNormal < 0.0f) {
                 float restitution = 0.6f; // 反発係数（0.0で弾まない、1.0で完全に弾む）
+
+                // 衝突による回転エネルギーの消失（音や熱への変換変数）
+                float spinLoss = 0.95f; // 衝突のたびに回転エネルギーが5%消失する
+
+                // 物理エンジンの定石（Resting Contact）
+                // 衝突速度が極めて遅い場合は反発をゼロにし、床での永遠なプルプル振動を防ぐ
+                if (relVelAlongNormal > -1.0f) {
+                    restitution = 0.0f;
+                    spinLoss = 0.5f;    // ガタつき（プルプル）の回転エネルギーを大きく熱として逃がす
+                }
                 
                 // 力積の分子: -(1 + e) * v_n
                 float j_numerator = -(1.0f + restitution) * relVelAlongNormal;
@@ -309,6 +353,45 @@ int main(void)
                 Vector3 rxJ = Vector3CrossProduct(r, impulse);
                 Vector3 angularImpulse = box.ComputeWorldInverseInertia(rxJ);
                 box.angularVelocity = Vector3Add(box.angularVelocity, angularImpulse);
+
+                // クーロン摩擦（接線方向のインパルス）
+                Vector3 newVelocityAtContact = Vector3Add(box.velocity, Vector3CrossProduct(box.angularVelocity, r));
+                float newRelVelAlongNormal = Vector3DotProduct(newVelocityAtContact, info.normal);
+                Vector3 tangentVelocity = Vector3Subtract(newVelocityAtContact, Vector3Scale(info.normal, newRelVelAlongNormal));
+                float tangentSpeed = Vector3Length(tangentVelocity);
+                
+                if (tangentSpeed > 0.001f) {
+                    Vector3 t = Vector3Scale(tangentVelocity, 1.0f / tangentSpeed);
+                    
+                    Vector3 rxt = Vector3CrossProduct(r, t);
+                    Vector3 invI_rxt = box.ComputeWorldInverseInertia(rxt);
+                    Vector3 crossTermT = Vector3CrossProduct(invI_rxt, r);
+                    float jt_denominator = (1.0f / box.mass) + Vector3DotProduct(crossTermT, t);
+                    
+                    float jt = -tangentSpeed / jt_denominator;
+                    float mu = 0.5f; 
+                    float maxFriction = j * mu;
+                    if (jt < -maxFriction) jt = -maxFriction;
+                    if (jt > maxFriction) jt = maxFriction;
+                    
+                    Vector3 frictionImpulse = Vector3Scale(t, jt);
+                    box.velocity = Vector3Add(box.velocity, Vector3Scale(frictionImpulse, 1.0f / box.mass));
+                    Vector3 rxFriction = Vector3CrossProduct(r, frictionImpulse);
+                    Vector3 angularFrictionImpulse = box.ComputeWorldInverseInertia(rxFriction);
+                    box.angularVelocity = Vector3Add(box.angularVelocity, angularFrictionImpulse);
+                }
+
+                // 衝突によるエネルギー消失を適用
+                box.angularVelocity = Vector3Scale(box.angularVelocity, spinLoss);
+            }
+
+            // ログの書き込み（衝突している間だけ記録）
+            if (logFile.is_open()) {
+                logFile << frameCount << ","
+                        << box.position.y << ","
+                        << box.velocity.y << ","
+                        << info.depth << ","
+                        << Vector3Length(box.angularVelocity) << "\n";
             }
         }
 
@@ -360,6 +443,11 @@ int main(void)
             DrawText("Hold RIGHT CLICK to move (WASD/Space/Shift) and look around", 10, 40, 10, DARKGRAY);
 
         EndDrawing();
+    }
+
+    // ログファイルを閉じる
+    if (logFile.is_open()) {
+        logFile.close();
     }
 
     // 終了処理
