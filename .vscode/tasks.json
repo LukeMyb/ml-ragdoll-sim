@@ -8,6 +8,7 @@
             "args": [
                 "${workspaceFolder}/src/*.cpp",
                 "${workspaceFolder}/src/physics/*.cpp",
+                "${workspaceFolder}/src/graphics/*.cpp",
                 "-o", "${workspaceFolder}/dist/run.exe",
                 "-std=c++20",
                 "-I./include",
