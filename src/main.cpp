@@ -3,9 +3,10 @@
 #include "rlgl.h"
 #include <fstream>
 
+#include "graphics/Renderer.h"
 #include "physics/RigidBody.h"
 #include "physics/Collision.h"
-#include "graphics/Renderer.h"
+#include "physics/PhysicsWorld.h"
 
 int main(void)
 {
@@ -51,16 +52,17 @@ int main(void)
     floor.isStatic = true; // 重力や衝突で動かないようにする
     floor.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f }; // 固定物なので回転しにくさは無限大(逆数は0)
 
-    SetTargetFPS(60);
+    // 物理ワールドの作成と剛体の登録
+    PhysicsWorld world;
+    world.AddBody(&box);
+    world.AddBody(&floor);
 
-    // 描画用に衝突情報を保存する変数
-    Vector3 debugContactPoint = { 0 };
-    bool isCollidingThisFrame = false;
+    SetTargetFPS(60);
 
     // ログファイルの準備
     std::ofstream logFile("physics_log.csv");
     if (logFile.is_open()) {
-        logFile << "Frame,PosY,VelY,Depth,AngularSpeed\n"; // ヘッダ行
+        logFile << "Frame,PosY,VelY,AngularSpeed\n"; // ヘッダ行
     }
     int frameCount = 0;
 
@@ -71,135 +73,17 @@ int main(void)
         // 物理演算の更新処理
         float deltaTime = GetFrameTime(); // 前のフレームから何秒経過したか（約0.016秒）
 
-        // 重力ベクトルを作成（地球の重力加速度 -9.8 * 質量）
-        Vector3 gravity = Vector3{ 0.0f, -9.8f * box.mass, 0.0f };
-        box.ApplyForce(gravity, deltaTime);
-        box.Update(deltaTime);
+        // 物理ワールドの更新
+        world.Step(deltaTime);
 
-        // SATによる衝突判定と押し戻し（位置の解決）
-        CollisionInfo info;
-        isCollidingThisFrame = CheckCollisionSAT(box, floor, &info);
-        if (isCollidingThisFrame) {
-            // 複数の接触点の「平均位置」を計算する
-            Vector3 averageContact = { 0 };
-            for (int i = 0; i < info.contactCount; i++) {
-                averageContact = Vector3Add(averageContact, info.contactPoints[i]);
-            }
-            averageContact = Vector3Scale(averageContact, 1.0f / (float)info.contactCount);
-            debugContactPoint = averageContact; // 平均位置を中心としてインパルスを計算する
-
-            // Baumgarte安定化による位置の押し戻し
-            const float slop = 0.01f;     // 微小なめり込みは無視する
-            const float percent = 0.2f;
-            
-            float penetration = info.depth - slop;
-            if (penetration < 0.0f) penetration = 0.0f;
-
-            // 位置の押し戻し（めり込み解消）
-            Vector3 correction = Vector3Scale(info.normal, penetration * percent);
-            box.position = Vector3Add(box.position, correction);
-            debugContactPoint = Vector3Add(debugContactPoint, correction); // 青い球も一緒に移動
-
-            // インパルスを用いた物理的な跳ね返り計算
-            // 重心から衝突点へのベクトル(r)
-            Vector3 r = Vector3Subtract(debugContactPoint, box.position);
-            
-            // 衝突点での相対速度 = 並進速度 + (角速度 × r)
-            Vector3 velocityAtContact = Vector3Add(box.velocity, Vector3CrossProduct(box.angularVelocity, r));
-            
-            // 法線方向（押し戻される方向）の速度成分
-            float relVelAlongNormal = Vector3DotProduct(velocityAtContact, info.normal);
-            
-            // 互いに近づいている（めり込もうとしている）場合のみ跳ね返り計算を行う
-            if (relVelAlongNormal < 0.0f) {
-                float restitution = 0.6f; // 反発係数（0.0で弾まない、1.0で完全に弾む）
-
-                // 衝突による回転エネルギーの消失（音や熱への変換変数）
-                float spinLoss = 0.95f; // 衝突のたびに回転エネルギーが5%消失する
-
-                // 物理エンジンの定石（Resting Contact）
-                // 衝突速度が極めて遅い場合は反発をゼロにし、床での永遠なプルプル振動を防ぐ
-                if (relVelAlongNormal > -1.0f) {
-                    restitution = 0.0f;
-                    spinLoss = 0.95f;
-                }
-                
-                // 力積の分子: -(1 + e) * v_n
-                float j_numerator = -(1.0f + restitution) * relVelAlongNormal;
-                
-                // 力積の分母: 1/m + (I^-1 * (r x n) x r) ・ n
-                Vector3 rxn = Vector3CrossProduct(r, info.normal);
-                Vector3 invI_rxn = box.ComputeWorldInverseInertia(rxn);
-                Vector3 crossTerm = Vector3CrossProduct(invI_rxn, r);
-                float j_denominator = (1.0f / box.mass) + Vector3DotProduct(crossTerm, info.normal);
-                
-                // インパルスの大きさ(j)とベクトル(impulse)
-                float j = j_numerator / j_denominator;
-                Vector3 impulse = Vector3Scale(info.normal, j);
-                
-                // 並進速度の更新 (v += J / m)
-                box.velocity = Vector3Add(box.velocity, Vector3Scale(impulse, 1.0f / box.mass));
-                
-                // 角速度の更新 (w += I^-1 * (r x J))
-                Vector3 rxJ = Vector3CrossProduct(r, impulse);
-                Vector3 angularImpulse = box.ComputeWorldInverseInertia(rxJ);
-                box.angularVelocity = Vector3Add(box.angularVelocity, angularImpulse);
-
-                // クーロン摩擦（接線方向のインパルス）
-                Vector3 newVelocityAtContact = Vector3Add(box.velocity, Vector3CrossProduct(box.angularVelocity, r));
-                float newRelVelAlongNormal = Vector3DotProduct(newVelocityAtContact, info.normal);
-                Vector3 tangentVelocity = Vector3Subtract(newVelocityAtContact, Vector3Scale(info.normal, newRelVelAlongNormal));
-                float tangentSpeed = Vector3Length(tangentVelocity);
-                
-                if (tangentSpeed > 0.001f) {
-                    Vector3 t = Vector3Scale(tangentVelocity, 1.0f / tangentSpeed);
-                    
-                    Vector3 rxt = Vector3CrossProduct(r, t);
-                    Vector3 invI_rxt = box.ComputeWorldInverseInertia(rxt);
-                    Vector3 crossTermT = Vector3CrossProduct(invI_rxt, r);
-                    float jt_denominator = (1.0f / box.mass) + Vector3DotProduct(crossTermT, t);
-                    
-                    float jt = -tangentSpeed / jt_denominator;
-                    float mu = 0.5f; 
-                    float maxFriction = j * mu;
-                    if (jt < -maxFriction) jt = -maxFriction;
-                    if (jt > maxFriction) jt = maxFriction;
-                    
-                    Vector3 frictionImpulse = Vector3Scale(t, jt);
-                    box.velocity = Vector3Add(box.velocity, Vector3Scale(frictionImpulse, 1.0f / box.mass));
-                    Vector3 rxFriction = Vector3CrossProduct(r, frictionImpulse);
-                    Vector3 angularFrictionImpulse = box.ComputeWorldInverseInertia(rxFriction);
-                    box.angularVelocity = Vector3Add(box.angularVelocity, angularFrictionImpulse);
-                }
-
-                // 衝突によるエネルギー消失を適用
-                box.angularVelocity = Vector3Scale(box.angularVelocity, spinLoss);
-            }
-
-            // ログの書き込み（衝突している間だけ記録）
-            if (logFile.is_open()) {
-                logFile << frameCount << ","
-                        << box.position.y << ","
-                        << box.velocity.y << ","
-                        << info.depth << ","
-                        << Vector3Length(box.angularVelocity) << "\n";
-            }
+        // ログの書き込み（スリープしていない間だけ記録）
+        if (logFile.is_open() && !box.isSleeping) {
+            logFile << frameCount << ","
+                    << box.position.y << ","
+                    << box.velocity.y << ","
+                    << Vector3Length(box.angularVelocity) << "\n";
         }
 
-        // スリープ判定（0.5秒間、速度が極小なら完全静止させる）
-        if (!box.isSleeping) {
-            // 速度と角速度がどちらも極めて小さい状態かチェック
-            if (Vector3Length(box.velocity) < 0.05f && Vector3Length(box.angularVelocity) < 0.05f) {
-                box.sleepTimer += deltaTime;
-                if (box.sleepTimer > 0.5f) { // 0.5秒間ほぼ止まっていたらスリープ状態へ移行
-                    box.isSleeping = true;
-                    box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
-                    box.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
-                }
-            } else {
-                box.sleepTimer = 0.0f; // 少しでも動いたらタイマーをリセット
-            }
-        }
 
         // カメラの制御（右クリックドラッグ時のみ）
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) DisableCursor();
@@ -234,13 +118,15 @@ int main(void)
 
             // 3D空間の描画モードを開始
             BeginMode3D(camera);
-                // ヘルパー関数で箱と床を描画
-                DrawOBB(box, RED);
-                DrawOBB(floor, GRAY); // 床をグレーの箱として描画
+                // Worldに登録されている全ての剛体を自動で描画
+                for (RigidBody* body : world.GetBodies()) {
+                    // 固定物はグレー、動くものは赤で描画
+                    DrawOBB(*body, body->isStatic ? GRAY : RED);
+                }
                 
-                // 衝突が発生している間、衝突した角に青い球を描画
-                if (isCollidingThisFrame) {
-                    DrawSphere(debugContactPoint, 0.15f, BLUE);
+                // 衝突点のデバッグ描画（複数対応）
+                for (Vector3 contact : world.debugContactPoints) {
+                    DrawSphere(contact, 0.15f, BLUE);
                 }
             EndMode3D();
 

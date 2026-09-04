@@ -1,0 +1,175 @@
+#include "PhysicsWorld.h"
+
+void PhysicsWorld::AddBody(RigidBody* body) {
+    bodies.push_back(body);
+}
+
+void PhysicsWorld::Step(float deltaTime) {
+    debugContactPoints.clear();
+
+    // 重力の適用と位置・姿勢の更新
+    for (RigidBody* body : bodies) {
+        if (!body->isStatic && !body->isSleeping) {
+            Vector3 force = Vector3Scale(gravity, body->mass);
+            body->ApplyForce(force, deltaTime);
+        }
+        body->Update(deltaTime);
+    }
+
+    // 衝突判定と解決（総当たり）
+    for (size_t i = 0; i < bodies.size(); i++) {
+        for (size_t j = i + 1; j < bodies.size(); j++) {
+            RigidBody* a = bodies[i];
+            RigidBody* b = bodies[j];
+
+            // 両方とも固定物、またはスリープ中の場合は判定スキップ
+            if ((a->isStatic || a->isSleeping) && (b->isStatic || b->isSleeping)) continue;
+
+            CollisionInfo info;
+            if (CheckCollisionSAT(*a, *b, &info)) {
+                ResolveCollision(a, b, info);
+                
+                // 衝突が発生したらスリープを解除
+                a->isSleeping = false;
+                b->isSleeping = false;
+            }
+        }
+    }
+
+    // スリープ判定
+    for (RigidBody* body : bodies) {
+        if (body->isStatic) continue;
+
+        if (!body->isSleeping) {
+            if (Vector3Length(body->velocity) < 0.05f && Vector3Length(body->angularVelocity) < 0.05f) {
+                body->sleepTimer += deltaTime;
+                if (body->sleepTimer > 0.5f) {
+                    body->isSleeping = true;
+                    body->velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+                    body->angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+                }
+            } else {
+                body->sleepTimer = 0.0f;
+            }
+        }
+    }
+}
+
+void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionInfo& info) {
+    float invMassA = a->isStatic ? 0.0f : (1.0f / a->mass);
+    float invMassB = b->isStatic ? 0.0f : (1.0f / b->mass);
+    float totalInvMass = invMassA + invMassB;
+
+    if (totalInvMass <= 0.0f) return; // 両方固定物なら何もしない
+
+    // Baumgarte安定化 (めり込みの押し戻し)
+    const float slop = 0.01f;
+    const float percent = 0.2f;
+    float penetration = info.depth - slop;
+    if (penetration < 0.0f) penetration = 0.0f;
+
+    // 質量の比率に応じて両方のオブジェクトを押し戻す
+    Vector3 correction = Vector3Scale(info.normal, (penetration * percent) / totalInvMass);
+    if (!a->isStatic) a->position = Vector3Add(a->position, Vector3Scale(correction, invMassA));
+    if (!b->isStatic) b->position = Vector3Subtract(b->position, Vector3Scale(correction, invMassB));
+
+    // 接触点の平均位置
+    Vector3 averageContact = { 0 };
+    for (int i = 0; i < info.contactCount; i++) {
+        averageContact = Vector3Add(averageContact, info.contactPoints[i]);
+    }
+    averageContact = Vector3Scale(averageContact, 1.0f / (float)info.contactCount);
+    debugContactPoints.push_back(averageContact);
+
+    // 反発のインパルス計算
+    Vector3 rA = Vector3Subtract(averageContact, a->position);
+    Vector3 rB = Vector3Subtract(averageContact, b->position);
+
+    Vector3 velA = Vector3Add(a->velocity, Vector3CrossProduct(a->angularVelocity, rA));
+    Vector3 velB = Vector3Add(b->velocity, Vector3CrossProduct(b->angularVelocity, rB));
+    Vector3 relativeVel = Vector3Subtract(velA, velB);
+
+    float relVelAlongNormal = Vector3DotProduct(relativeVel, info.normal);
+    if (relVelAlongNormal > 0.0f) return; // 離れていく場合は処理しない
+
+    float restitution = 0.6f;
+    float spinLoss = 0.95f;
+    if (relVelAlongNormal > -1.0f) {
+        restitution = 0.0f; // 極小速度なら反発しない
+    }
+
+    float j_numerator = -(1.0f + restitution) * relVelAlongNormal;
+
+    Vector3 rxn_A = Vector3CrossProduct(rA, info.normal);
+    Vector3 invI_rxn_A = a->isStatic ? Vector3{0,0,0} : a->ComputeWorldInverseInertia(rxn_A);
+    Vector3 crossTerm_A = Vector3CrossProduct(invI_rxn_A, rA);
+
+    Vector3 rxn_B = Vector3CrossProduct(rB, info.normal);
+    Vector3 invI_rxn_B = b->isStatic ? Vector3{0,0,0} : b->ComputeWorldInverseInertia(rxn_B);
+    Vector3 crossTerm_B = Vector3CrossProduct(invI_rxn_B, rB);
+
+    float j_denominator = totalInvMass 
+        + Vector3DotProduct(crossTerm_A, info.normal) 
+        + Vector3DotProduct(crossTerm_B, info.normal);
+
+    float j = j_numerator / j_denominator;
+    Vector3 impulse = Vector3Scale(info.normal, j);
+
+    if (!a->isStatic) {
+        a->velocity = Vector3Add(a->velocity, Vector3Scale(impulse, invMassA));
+        Vector3 rxJ_A = Vector3CrossProduct(rA, impulse);
+        a->angularVelocity = Vector3Add(a->angularVelocity, a->ComputeWorldInverseInertia(rxJ_A));
+        a->angularVelocity = Vector3Scale(a->angularVelocity, spinLoss);
+    }
+    if (!b->isStatic) {
+        b->velocity = Vector3Subtract(b->velocity, Vector3Scale(impulse, invMassB));
+        // bに対するインパルスは逆向き（-impulse）なので、外積の結果を反転させる
+        Vector3 rxJ_B_neg = Vector3Scale(Vector3CrossProduct(rB, impulse), -1.0f);
+        b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(rxJ_B_neg));
+        b->angularVelocity = Vector3Scale(b->angularVelocity, spinLoss);
+    }
+
+    // クーロン摩擦（双方向対応）
+    velA = Vector3Add(a->velocity, Vector3CrossProduct(a->angularVelocity, rA));
+    velB = Vector3Add(b->velocity, Vector3CrossProduct(b->angularVelocity, rB));
+    relativeVel = Vector3Subtract(velA, velB);
+
+    float newRelVelAlongNormal = Vector3DotProduct(relativeVel, info.normal);
+    Vector3 tangentVelocity = Vector3Subtract(relativeVel, Vector3Scale(info.normal, newRelVelAlongNormal));
+    float tangentSpeed = Vector3Length(tangentVelocity);
+
+    if (tangentSpeed > 0.001f) {
+        Vector3 t = Vector3Scale(tangentVelocity, 1.0f / tangentSpeed);
+
+        Vector3 rxt_A = Vector3CrossProduct(rA, t);
+        Vector3 invI_rxt_A = a->isStatic ? Vector3{0,0,0} : a->ComputeWorldInverseInertia(rxt_A);
+        Vector3 crossTermT_A = Vector3CrossProduct(invI_rxt_A, rA);
+
+        Vector3 rxt_B = Vector3CrossProduct(rB, t);
+        Vector3 invI_rxt_B = b->isStatic ? Vector3{0,0,0} : b->ComputeWorldInverseInertia(rxt_B);
+        Vector3 crossTermT_B = Vector3CrossProduct(invI_rxt_B, rB);
+
+        float jt_denominator = totalInvMass 
+            + Vector3DotProduct(crossTermT_A, t) 
+            + Vector3DotProduct(crossTermT_B, t);
+
+        float jt = -tangentSpeed / jt_denominator;
+        float mu = 0.5f; 
+        float maxFriction = j * mu;
+        if (jt < -maxFriction) jt = -maxFriction;
+        if (jt > maxFriction) jt = maxFriction;
+
+        Vector3 frictionImpulse = Vector3Scale(t, jt);
+
+        if (!a->isStatic) {
+            a->velocity = Vector3Add(a->velocity, Vector3Scale(frictionImpulse, invMassA));
+            Vector3 rxFriction_A = Vector3CrossProduct(rA, frictionImpulse);
+            a->angularVelocity = Vector3Add(a->angularVelocity, a->ComputeWorldInverseInertia(rxFriction_A));
+        }
+        if (!b->isStatic) {
+            b->velocity = Vector3Subtract(b->velocity, Vector3Scale(frictionImpulse, invMassB));
+            Vector3 rxFriction_B_neg = Vector3Scale(Vector3CrossProduct(rB, frictionImpulse), -1.0f);
+            b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(rxFriction_B_neg));
+        }
+    }
+}
