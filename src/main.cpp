@@ -1,5 +1,6 @@
 #include "raylib.h"
 #include "raymath.h"
+#include "rlgl.h"
 
 // 物理演算用の構造体
 struct RigidBody {
@@ -7,6 +8,10 @@ struct RigidBody {
     Vector3 velocity; // 速度
     float mass;       // 質量
     Vector3 size;     // 箱のサイズ (幅X, 高さY, 奥行Z)
+
+    // 回転用のパラメータ
+    Quaternion orientation;  // 姿勢（クォータニオン）
+    Vector3 angularVelocity; // 角速度
     
     // 力を加えて速度を変化させる
     void ApplyForce(Vector3 force) {
@@ -23,6 +28,19 @@ struct RigidBody {
         // 座標 = 座標 + 移動量
         position = Vector3Add(position, deltaPos);
 
+        // 回転（姿勢）の更新
+        float angularSpeed = Vector3Length(angularVelocity);
+        if (angularSpeed > 0.0f) {
+            // 回転軸を求める（角速度ベクトルを正規化）
+            Vector3 axis = Vector3Scale(angularVelocity, 1.0f / angularSpeed);
+            // deltaTimeで進む分の回転（差分クォータニオン）を作成
+            Quaternion deltaRot = QuaternionFromAxisAngle(axis, angularSpeed * deltaTime);
+            // 現在の姿勢に差分の回転を掛けて新しい姿勢にする
+            orientation = QuaternionMultiply(deltaRot, orientation);
+            // 誤差が蓄積しないように正規化
+            orientation = QuaternionNormalize(orientation);
+        }
+
         // 床 (Y=0) との当たり判定と応答（簡易ペナルティ法）
         float bottomY = position.y - (size.y / 2.0f);
         
@@ -38,7 +56,7 @@ int main(void)
     // 画面の初期化 (800x450のウィンドウを作成)
     const int screenWidth = 800;
     const int screenHeight = 450;
-    InitWindow(screenWidth, screenHeight, "3D Camera & Cube");
+    InitWindow(screenWidth, screenHeight, "Rotation Physics");
 
     // 3Dカメラの設定
     Camera3D camera = { 0 };
@@ -54,6 +72,10 @@ int main(void)
     box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };  // 初速はゼロ
     box.mass = 1.0f;                             // 質量は1.0kg
     box.size = Vector3{ 2.0f, 2.0f, 2.0f };      // 箱のサイズ
+
+    // 回転の初期化
+    box.orientation = QuaternionIdentity();            // 無回転状態でスタート
+    box.angularVelocity = Vector3{ 2.0f, 1.0f, 1.5f }; // テスト用に適当な角速度（回転の勢い）を与える
 
     SetTargetFPS(60);
 
@@ -103,13 +125,30 @@ int main(void)
 
             // 3D空間の描画モードを開始
             BeginMode3D(camera);
-                DrawCube(box.position, 2.0f, 2.0f, 2.0f, RED);
-                DrawCubeWires(box.position, 2.0f, 2.0f, 2.0f, BLACK);
+                // 回転を考慮した箱の描画
+                rlPushMatrix(); // 現在の描画座標系を保存
+
+                    // 位置を移動
+                    rlTranslatef(box.position.x, box.position.y, box.position.z);
+
+                    // 姿勢（クォータニオン）から回転軸と回転角を抽出して回転
+                    Vector3 axis;
+                    float angle;
+                    QuaternionToAxisAngle(box.orientation, &axis, &angle);
+                    // rlRotatefは「度（Degree）」で指定するため、RAD2DEG(180/PI)を掛ける
+                    rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
+
+                    // 原点に箱を描画（すでに移動と回転の変換がかかっているため、見た目上は正しい位置・姿勢になる）
+                    DrawCube(Vector3{ 0.0f, 0.0f, 0.0f }, box.size.x, box.size.y, box.size.z, RED); 
+                    DrawCubeWires(Vector3{ 0.0f, 0.0f, 0.0f }, box.size.x, box.size.y, box.size.z, BLACK);
+
+                rlPopMatrix(); // 描画座標系を元に戻す
+
                 DrawGrid(10, 1.0f);
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）
-            DrawText("Gravity and Motion", 10, 10, 20, DARKGRAY);
+            DrawText("Rotation Physics", 10, 10, 20, DARKGRAY);
             DrawText("Hold RIGHT CLICK to move (WASD/Space/Shift) and look around", 10, 40, 10, DARKGRAY);
 
         EndDrawing();
