@@ -12,9 +12,13 @@ struct RigidBody {
     // 回転用のパラメータ
     Quaternion orientation;  // 姿勢（クォータニオン）
     Vector3 angularVelocity; // 角速度
+
+    bool isStatic = false; // 動かない物体（床など）を判別するフラグ
     
     // 力を加えて速度を変化させる
     void ApplyForce(Vector3 force) {
+        if (isStatic) return; // 固定物は力を無視する
+
         // 加速度 = 力 / 質量 (a = F / m)
         Vector3 acceleration = Vector3Scale(force, 1.0f / mass);
         // 速度 = 速度 + 加速度
@@ -23,6 +27,8 @@ struct RigidBody {
 
     // 速度を使って位置を更新する（1フレームごとの処理）
     void Update(float deltaTime) {
+        if (isStatic) return; // 固定物は動かない
+
         // 移動量 = 速度 * 経過時間
         Vector3 deltaPos = Vector3Scale(velocity, deltaTime);
         // 座標 = 座標 + 移動量
@@ -39,14 +45,6 @@ struct RigidBody {
             orientation = QuaternionMultiply(deltaRot, orientation);
             // 誤差が蓄積しないように正規化
             orientation = QuaternionNormalize(orientation);
-        }
-
-        // 床 (Y=0) との当たり判定と応答（簡易ペナルティ法）
-        float bottomY = position.y - (size.y / 2.0f);
-        
-        if (bottomY < 0.0f) {
-            position.y = 0.0f + (size.y / 2.0f); // 押し戻し
-            velocity.y = 0.0f;                   // 速度をゼロに
         }
     }
 
@@ -79,12 +77,105 @@ struct RigidBody {
     }
 };
 
+// 衝突情報とSAT判定関数
+struct CollisionInfo {
+    bool colliding;
+    Vector3 normal; // 押し戻す方向（法線）
+    float depth;    // めり込み量
+};
+
+// SAT（分離軸定理）によるOBB同士の衝突判定
+bool CheckCollisionSAT(const RigidBody& a, const RigidBody& b, CollisionInfo* outInfo) {
+    Vector3 axesA[3], axesB[3];
+    a.GetAxes(axesA);
+    b.GetAxes(axesB);
+
+    // 15本の判定軸を作成（Aの3軸、Bの3軸、AとBの軸の外積9本）
+    Vector3 testAxes[15];
+    int axisCount = 0;
+    
+    for (int i = 0; i < 3; i++) testAxes[axisCount++] = axesA[i];
+    for (int i = 0; i < 3; i++) testAxes[axisCount++] = axesB[i];
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            Vector3 cross = Vector3CrossProduct(axesA[i], axesB[j]);
+            // 軸が平行で外積が0になる場合は除外
+            if (Vector3LengthSqr(cross) > 1e-6f) {
+                testAxes[axisCount++] = Vector3Normalize(cross);
+            }
+        }
+    }
+
+    Vector3 verticesA[8], verticesB[8];
+    a.GetVertices(verticesA);
+    b.GetVertices(verticesB);
+
+    float minOverlap = 999999.0f;
+    Vector3 smallestAxis = { 0 };
+
+    // 15本すべての軸に投影して重なりをチェック
+    for (int i = 0; i < axisCount; i++) {
+        Vector3 axis = testAxes[i];
+        float minA = 999999.0f, maxA = -999999.0f;
+        float minB = 999999.0f, maxB = -999999.0f;
+
+        // Box A の投影
+        for (int v = 0; v < 8; v++) {
+            float proj = Vector3DotProduct(verticesA[v], axis);
+            if (proj < minA) minA = proj;
+            if (proj > maxA) maxA = proj;
+        }
+        // Box B の投影
+        for (int v = 0; v < 8; v++) {
+            float proj = Vector3DotProduct(verticesB[v], axis);
+            if (proj < minB) minB = proj;
+            if (proj > maxB) maxB = proj;
+        }
+
+        // 重なりがない軸が1つでもあれば衝突していない
+        if (maxA < minB || maxB < minA) return false; 
+
+        // 重なりの深さを計算
+        float overlap = (maxA < maxB ? maxA : maxB) - (minA > minB ? minA : minB);
+        if (overlap < minOverlap) {
+            minOverlap = overlap;
+            smallestAxis = axis;
+        }
+    }
+
+    // 押し戻しベクトルが B から A に向かうように向きを統一
+    Vector3 dirBA = Vector3Subtract(a.position, b.position);
+    if (Vector3DotProduct(smallestAxis, dirBA) < 0.0f) {
+        smallestAxis = Vector3Scale(smallestAxis, -1.0f);
+    }
+
+    if (outInfo) {
+        outInfo->colliding = true;
+        outInfo->normal = smallestAxis;
+        outInfo->depth = minOverlap;
+    }
+    return true; // すべての軸で重なっていれば衝突
+}
+
+// 描画処理をスッキリさせるためのヘルパー関数
+void DrawOBB(const RigidBody& rb, Color color) {
+    rlPushMatrix();
+        rlTranslatef(rb.position.x, rb.position.y, rb.position.z);
+        Vector3 axis;
+        float angle;
+        QuaternionToAxisAngle(rb.orientation, &axis, &angle);
+        rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
+        DrawCube(Vector3{ 0.0f, 0.0f, 0.0f }, rb.size.x, rb.size.y, rb.size.z, color); 
+        DrawCubeWires(Vector3{ 0.0f, 0.0f, 0.0f }, rb.size.x, rb.size.y, rb.size.z, BLACK);
+    rlPopMatrix();
+}
+
 int main(void)
 {
     // 画面の初期化 (800x450のウィンドウを作成)
     const int screenWidth = 800;
     const int screenHeight = 450;
-    InitWindow(screenWidth, screenHeight, "OBB Vertices Test");
+    InitWindow(screenWidth, screenHeight, "SAT Collision (Position Resolution)");
 
     // 3Dカメラの設定
     Camera3D camera = { 0 };
@@ -100,10 +191,20 @@ int main(void)
     box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };  // 初速はゼロ
     box.mass = 1.0f;                             // 質量は1.0kg
     box.size = Vector3{ 2.0f, 2.0f, 2.0f };      // 箱のサイズ
-
-    // 回転の初期化
     box.orientation = QuaternionIdentity();            // 無回転状態でスタート
     box.angularVelocity = Vector3{ 2.0f, 1.0f, 1.5f }; // テスト用に適当な角速度（回転の勢い）を与える
+    box.isStatic = false;
+
+    // 床を「巨大な固定された箱」として作成
+    RigidBody floor;
+    // 上の面がY=0になるように、Y位置を厚みの半分だけ下げる
+    floor.position = Vector3{ 0.0f, -0.5f, 0.0f }; 
+    floor.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    floor.mass = 0.0f; // 固定物なので関係なし
+    floor.size = Vector3{ 20.0f, 1.0f, 20.0f }; // 広さ20x20、厚さ1の箱
+    floor.orientation = QuaternionIdentity();
+    floor.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    floor.isStatic = true; // 重力や衝突で動かないようにする
 
     SetTargetFPS(60);
 
@@ -114,16 +215,26 @@ int main(void)
 
         // 重力ベクトルを作成（地球の重力加速度 -9.8 * 質量）
         Vector3 gravity = Vector3{ 0.0f, -9.8f * box.mass, 0.0f };
-        box.ApplyForce(gravity); // 箱に重力を加える
-
-        // 速度から座標を更新
+        box.ApplyForce(gravity); 
         box.Update(deltaTime);
 
-        // 押した瞬間と離した瞬間でカーソルの表示/非表示を切り替える
+        // SATによる衝突判定と押し戻し（位置の解決）
+        CollisionInfo info;
+        if (CheckCollisionSAT(box, floor, &info)) {
+            // めり込んだ分だけ、法線方向に箱を押し戻す
+            Vector3 correction = Vector3Scale(info.normal, info.depth);
+            box.position = Vector3Add(box.position, correction);
+
+            // まだ跳ね返り(インパルス)の計算をしていないため、
+            // 押し戻しが成功したかを視覚的に確認するために速度をゼロにして空中にピタッと止める
+            box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+            box.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+        }
+
+        // カメラの制御（右クリックドラッグ時のみ）
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) DisableCursor();
         if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) EnableCursor();
 
-        // カメラの制御（右クリックドラッグ時のみ）
         if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
         {
             // 感度とスピードを調整できる変数
@@ -153,37 +264,18 @@ int main(void)
 
             // 3D空間の描画モードを開始
             BeginMode3D(camera);
-                // 回転を考慮した箱の描画
-                rlPushMatrix(); // 現在の描画座標系を保存
-
-                    // 位置を移動
-                    rlTranslatef(box.position.x, box.position.y, box.position.z);
-
-                    // 姿勢（クォータニオン）から回転軸と回転角を抽出して回転
-                    Vector3 axis;
-                    float angle;
-                    QuaternionToAxisAngle(box.orientation, &axis, &angle);
-                    // rlRotatefは「度（Degree）」で指定するため、RAD2DEG(180/PI)を掛ける
-                    rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
-
-                    // 原点に箱を描画（すでに移動と回転の変換がかかっているため、見た目上は正しい位置・姿勢になる）
-                    DrawCube(Vector3{ 0.0f, 0.0f, 0.0f }, box.size.x, box.size.y, box.size.z, RED); 
-                    DrawCubeWires(Vector3{ 0.0f, 0.0f, 0.0f }, box.size.x, box.size.y, box.size.z, BLACK);
-
-                rlPopMatrix(); // 描画座標系を元に戻す
-
-                // SAT用頂点計算のデバッグ描画
+                // ヘルパー関数で箱と床を描画
+                DrawOBB(box, RED);
+                DrawOBB(floor, GRAY); // 床をグレーの箱として描画
+                
+                // デバッグ用の緑の球
                 Vector3 vertices[8];
                 box.GetVertices(vertices);
-                for (int i = 0; i < 8; i++) {
-                    DrawSphere(vertices[i], 0.1f, GREEN); // 8つの角に緑の球を描画
-                }
-
-                DrawGrid(10, 1.0f);
+                for (int i = 0; i < 8; i++) DrawSphere(vertices[i], 0.1f, GREEN);
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）
-            DrawText("OBB Vertices Test", 10, 10, 20, DARKGRAY);
+            DrawText("SAT Collision (Position Resolution)", 10, 10, 20, DARKGRAY);
             DrawText("Hold RIGHT CLICK to move (WASD/Space/Shift) and look around", 10, 40, 10, DARKGRAY);
 
         EndDrawing();
