@@ -7,7 +7,7 @@
             "command": "g++",
             "args": [
                 "${workspaceFolder}/src/*.cpp",
-                "-o", "game.exe",
+                "-o", "${workspaceFolder}/dist/game.exe",
                 "-std=c++20",
                 "-I./include",
                 "-L./lib",
