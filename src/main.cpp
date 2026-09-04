@@ -6,6 +6,7 @@ struct RigidBody {
     Vector3 position; // 座標
     Vector3 velocity; // 速度
     float mass;       // 質量
+    Vector3 size;     // 箱のサイズ (幅X, 高さY, 奥行Z)
     
     // 力を加えて速度を変化させる
     void ApplyForce(Vector3 force) {
@@ -21,6 +22,14 @@ struct RigidBody {
         Vector3 deltaPos = Vector3Scale(velocity, deltaTime);
         // 座標 = 座標 + 移動量
         position = Vector3Add(position, deltaPos);
+
+        // 床 (Y=0) との当たり判定と応答（簡易ペナルティ法）
+        float bottomY = position.y - (size.y / 2.0f);
+        
+        if (bottomY < 0.0f) {
+            position.y = 0.0f + (size.y / 2.0f); // 押し戻し
+            velocity.y = 0.0f;                   // 速度をゼロに
+        }
     }
 };
 
@@ -44,6 +53,7 @@ int main(void)
     box.position = Vector3{ 0.0f, 10.0f, 0.0f }; // 少し高い位置(Y=10)からスタート
     box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };  // 初速はゼロ
     box.mass = 1.0f;                             // 質量は1.0kg
+    box.size = Vector3{ 2.0f, 2.0f, 2.0f };      // 箱のサイズ
 
     SetTargetFPS(60);
 
