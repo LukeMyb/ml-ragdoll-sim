@@ -19,10 +19,14 @@ struct RigidBody {
     Vector3 localInertiaInverse;
 
     bool isStatic = false; // 動かない物体（床など）を判別するフラグ
+
+    // 物理エンジンのスリープ（休止）システム
+    bool isSleeping = false;
+    float sleepTimer = 0.0f;
     
     // 力を加えて速度を変化させる
     void ApplyForce(Vector3 force, float deltaTime) {
-        if (isStatic) return; // 固定物は力を無視する
+        if (isStatic || isSleeping) return; // スリープ中は重力の影響を受けず完全静止する
 
         // 加速度 = 力 / 質量 (a = F / m)
         Vector3 acceleration = Vector3Scale(force, 1.0f / mass);
@@ -33,7 +37,7 @@ struct RigidBody {
 
     // 速度を使って位置を更新する（1フレームごとの処理）
     void Update(float deltaTime) {
-        if (isStatic) return; // 固定物は動かない
+        if (isStatic || isSleeping) return; // スリープ中は移動処理をスキップする
 
         // 移動量 = 速度 * 経過時間
         Vector3 deltaPos = Vector3Scale(velocity, deltaTime);
@@ -299,7 +303,7 @@ int main(void)
 
             // Baumgarte安定化による位置の押し戻し
             const float slop = 0.01f;     // 微小なめり込みは無視する
-            const float percent = 0.8f;
+            const float percent = 0.2f;
             
             float penetration = info.depth - slop;
             if (penetration < 0.0f) penetration = 0.0f;
@@ -330,7 +334,7 @@ int main(void)
                 // 衝突速度が極めて遅い場合は反発をゼロにし、床での永遠なプルプル振動を防ぐ
                 if (relVelAlongNormal > -1.0f) {
                     restitution = 0.0f;
-                    spinLoss = 0.5f;    // ガタつき（プルプル）の回転エネルギーを大きく熱として逃がす
+                    spinLoss = 0.95f;
                 }
                 
                 // 力積の分子: -(1 + e) * v_n
@@ -392,6 +396,21 @@ int main(void)
                         << box.velocity.y << ","
                         << info.depth << ","
                         << Vector3Length(box.angularVelocity) << "\n";
+            }
+        }
+
+        // スリープ判定（0.5秒間、速度が極小なら完全静止させる）
+        if (!box.isSleeping) {
+            // 速度と角速度がどちらも極めて小さい状態かチェック
+            if (Vector3Length(box.velocity) < 0.1f && Vector3Length(box.angularVelocity) < 0.1f) {
+                box.sleepTimer += deltaTime;
+                if (box.sleepTimer > 0.5f) { // 0.5秒間ほぼ止まっていたらスリープ状態へ移行
+                    box.isSleeping = true;
+                    box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+                    box.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+                }
+            } else {
+                box.sleepTimer = 0.0f; // 少しでも動いたらタイマーをリセット
             }
         }
 
