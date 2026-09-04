@@ -13,6 +13,10 @@ struct RigidBody {
     Quaternion orientation;  // 姿勢（クォータニオン）
     Vector3 angularVelocity; // 角速度
 
+    // 慣性テンソルの逆数（ローカル座標系）
+    // 箱の形状に基づく「回転のしにくさ」を表す
+    Vector3 localInertiaInverse;
+
     bool isStatic = false; // 動かない物体（床など）を判別するフラグ
     
     // 力を加えて速度を変化させる
@@ -82,6 +86,7 @@ struct CollisionInfo {
     bool colliding;
     Vector3 normal; // 押し戻す方向（法線）
     float depth;    // めり込み量
+    Vector3 contactPoint; // ぶつかった点の座標
 };
 
 // SAT（分離軸定理）によるOBB同士の衝突判定
@@ -149,10 +154,23 @@ bool CheckCollisionSAT(const RigidBody& a, const RigidBody& b, CollisionInfo* ou
         smallestAxis = Vector3Scale(smallestAxis, -1.0f);
     }
 
+    // 衝突点の特定（近似）
+    // 押し戻し方向(normal)と「逆向き」に最も深く進んでいるAの頂点を衝突点とする
+    Vector3 contact = verticesA[0];
+    float minProj = Vector3DotProduct(verticesA[0], smallestAxis);
+    for (int i = 1; i < 8; i++) {
+        float proj = Vector3DotProduct(verticesA[i], smallestAxis);
+        if (proj < minProj) {
+            minProj = proj;
+            contact = verticesA[i];
+        }
+    }
+
     if (outInfo) {
         outInfo->colliding = true;
         outInfo->normal = smallestAxis;
         outInfo->depth = minOverlap;
+        outInfo->contactPoint = contact;
     }
     return true; // すべての軸で重なっていれば衝突
 }
@@ -175,7 +193,7 @@ int main(void)
     // 画面の初期化 (800x450のウィンドウを作成)
     const int screenWidth = 800;
     const int screenHeight = 450;
-    InitWindow(screenWidth, screenHeight, "SAT Collision (Position Resolution)");
+    InitWindow(screenWidth, screenHeight, "Contact Point Test");
 
     // 3Dカメラの設定
     Camera3D camera = { 0 };
@@ -195,6 +213,13 @@ int main(void)
     box.angularVelocity = Vector3{ 2.0f, 1.0f, 1.5f }; // テスト用に適当な角速度（回転の勢い）を与える
     box.isStatic = false;
 
+    // 箱の慣性テンソルの逆数を計算 (1 / Ix, Iy, Iz)
+    box.localInertiaInverse = Vector3{
+        12.0f / (box.mass * (box.size.y * box.size.y + box.size.z * box.size.z)),
+        12.0f / (box.mass * (box.size.x * box.size.x + box.size.z * box.size.z)),
+        12.0f / (box.mass * (box.size.x * box.size.x + box.size.y * box.size.y))
+    };
+
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
     // 上の面がY=0になるように、Y位置を厚みの半分だけ下げる
@@ -205,8 +230,13 @@ int main(void)
     floor.orientation = QuaternionIdentity();
     floor.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
     floor.isStatic = true; // 重力や衝突で動かないようにする
+    floor.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f }; // 固定物なので回転しにくさは無限大(逆数は0)
 
     SetTargetFPS(60);
+
+    // 描画用に衝突情報を保存する変数
+    Vector3 debugContactPoint = { 0 };
+    bool isCollidingThisFrame = false;
 
     while (!WindowShouldClose())
     {
@@ -220,10 +250,16 @@ int main(void)
 
         // SATによる衝突判定と押し戻し（位置の解決）
         CollisionInfo info;
-        if (CheckCollisionSAT(box, floor, &info)) {
+        isCollidingThisFrame = CheckCollisionSAT(box, floor, &info);
+        if (isCollidingThisFrame) {
+            debugContactPoint = info.contactPoint; // 描画用に衝突点を保存
+
             // めり込んだ分だけ、法線方向に箱を押し戻す
             Vector3 correction = Vector3Scale(info.normal, info.depth);
             box.position = Vector3Add(box.position, correction);
+
+            // デバッグ用の青い球も一緒に押し戻して箱の角に合わせる
+            debugContactPoint = Vector3Add(debugContactPoint, correction);
 
             // まだ跳ね返り(インパルス)の計算をしていないため、
             // 押し戻しが成功したかを視覚的に確認するために速度をゼロにして空中にピタッと止める
@@ -268,14 +304,14 @@ int main(void)
                 DrawOBB(box, RED);
                 DrawOBB(floor, GRAY); // 床をグレーの箱として描画
                 
-                // デバッグ用の緑の球
-                Vector3 vertices[8];
-                box.GetVertices(vertices);
-                for (int i = 0; i < 8; i++) DrawSphere(vertices[i], 0.1f, GREEN);
+                // 衝突が発生している間、衝突した角に青い球を描画
+                if (isCollidingThisFrame) {
+                    DrawSphere(debugContactPoint, 0.15f, BLUE);
+                }
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）
-            DrawText("SAT Collision (Position Resolution)", 10, 10, 20, DARKGRAY);
+            DrawText("Contact Point Test", 10, 10, 20, DARKGRAY);
             DrawText("Hold RIGHT CLICK to move (WASD/Space/Shift) and look around", 10, 40, 10, DARKGRAY);
 
         EndDrawing();
