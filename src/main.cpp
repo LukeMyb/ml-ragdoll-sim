@@ -49,6 +49,34 @@ struct RigidBody {
             velocity.y = 0.0f;                   // 速度をゼロに
         }
     }
+
+    // SAT用の計算関数群
+    // 現在の姿勢から、箱のローカルX, Y, Z軸の向き（単位ベクトル）を取得する
+    void GetAxes(Vector3 axes[3]) const {
+        // 基準となる軸を現在のクォータニオンで回転させる
+        axes[0] = Vector3RotateByQuaternion(Vector3{ 1.0f, 0.0f, 0.0f }, orientation);
+        axes[1] = Vector3RotateByQuaternion(Vector3{ 0.0f, 1.0f, 0.0f }, orientation);
+        axes[2] = Vector3RotateByQuaternion(Vector3{ 0.0f, 0.0f, 1.0f }, orientation);
+    }
+
+    // 箱の8つの頂点のワールド座標を取得する
+    void GetVertices(Vector3 vertices[8]) const {
+        Vector3 axes[3];
+        GetAxes(axes);
+
+        float hX = size.x / 2.0f;
+        float hY = size.y / 2.0f;
+        float hZ = size.z / 2.0f;
+
+        // 8つの頂点を計算（X, Y, Zの各軸方向にプラス/マイナスを組み合わせる）
+        for (int i = 0; i < 8; i++) {
+            Vector3 v = position;
+            v = Vector3Add(v, Vector3Scale(axes[0], (i & 1) ? hX : -hX));
+            v = Vector3Add(v, Vector3Scale(axes[1], (i & 2) ? hY : -hY));
+            v = Vector3Add(v, Vector3Scale(axes[2], (i & 4) ? hZ : -hZ));
+            vertices[i] = v;
+        }
+    }
 };
 
 int main(void)
@@ -56,7 +84,7 @@ int main(void)
     // 画面の初期化 (800x450のウィンドウを作成)
     const int screenWidth = 800;
     const int screenHeight = 450;
-    InitWindow(screenWidth, screenHeight, "Rotation Physics");
+    InitWindow(screenWidth, screenHeight, "OBB Vertices Test");
 
     // 3Dカメラの設定
     Camera3D camera = { 0 };
@@ -144,11 +172,18 @@ int main(void)
 
                 rlPopMatrix(); // 描画座標系を元に戻す
 
+                // SAT用頂点計算のデバッグ描画
+                Vector3 vertices[8];
+                box.GetVertices(vertices);
+                for (int i = 0; i < 8; i++) {
+                    DrawSphere(vertices[i], 0.1f, GREEN); // 8つの角に緑の球を描画
+                }
+
                 DrawGrid(10, 1.0f);
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）
-            DrawText("Rotation Physics", 10, 10, 20, DARKGRAY);
+            DrawText("OBB Vertices Test", 10, 10, 20, DARKGRAY);
             DrawText("Hold RIGHT CLICK to move (WASD/Space/Shift) and look around", 10, 40, 10, DARKGRAY);
 
         EndDrawing();
