@@ -7,6 +7,7 @@
 #include "physics/RigidBody.h"
 #include "physics/Collision.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/Ragdoll.h"
 
 int main(void)
 {
@@ -23,46 +24,6 @@ int main(void)
     camera.fovy = 45.0f;                                // 視野角
     camera.projection = CAMERA_PERSPECTIVE;             // 透視投影（遠近法）
 
-    // 箱1を作成
-    RigidBody box1;
-    box1.position = Vector3{ 0.0f, 10.0f, 0.0f };
-    box1.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
-    box1.mass = 1.0f;
-    box1.size = Vector3{ 1.0f, 2.0f, 1.0f };
-    box1.orientation = QuaternionIdentity();
-    box1.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
-    box1.isStatic = true; // 箱1は空中に固定する
-    box1.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f };
-
-    // 箱2を作成
-    RigidBody box2;
-    // 太もものすぐ下に配置（中心座標の差が2.0なので、隙間なくくっつく）
-    box2.position = Vector3{ 0.0f, 8.0f, 0.0f }; 
-    box2.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
-    box2.mass = 1.0f;
-    box2.size = Vector3{ 1.0f, 2.0f, 1.0f };
-    box2.orientation = QuaternionIdentity();
-    // テストのため、X軸回り（前か後ろ）に強い回転の勢いを与えておく
-    box2.angularVelocity = Vector3{ 0.0f, 0.0f, 10.0f }; // Z軸回りに回転させる
-    box2.isStatic = false;
-    box2.localInertiaInverse = Vector3{
-        12.0f / (box2.mass * (box2.size.y * box2.size.y + box2.size.z * box2.size.z)),
-        12.0f / (box2.mass * (box2.size.x * box2.size.x + box2.size.z * box2.size.z)),
-        12.0f / (box2.mass * (box2.size.x * box2.size.x + box2.size.y * box2.size.y))
-    };
-
-    // 膝関節ジョイントの作成
-    Joint joint;
-    joint.Init(&box1, &box2, Vector3{ 0.0f, 9.0f, 0.0f });
-
-    // ヒンジの設定を有効にする
-    joint.isHinge = true;
-    joint.minAngle = -45.0f; // -45度までしか曲がらない
-    joint.maxAngle = 45.0f;  // +45度までしか曲がらない
-
-    // モーターをオンにする
-    joint.motorEnabled = true;
-
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
     // 上の面がY=0になるように、Y位置を厚みの半分だけ下げる
@@ -75,22 +36,20 @@ int main(void)
     floor.isStatic = true; // 重力や衝突で動かないようにする
     floor.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f }; // 固定物なので回転しにくさは無限大(逆数は0)
 
-    // 箱1と箱2はお互いに衝突しないように設定
-    box1.IgnoreCollisionWith(&box2);
-
-    // 物理ワールドの作成と剛体の登録
     PhysicsWorld world;
-    world.AddBody(&box1); 
-    world.AddBody(&box2);
     world.AddBody(&floor);
-    world.AddJoint(&joint);
+
+    // ラグドールの作成と登録
+    Ragdoll ragdoll;
+    ragdoll.Build(Vector3{ 0.0f, 10.0f, 0.0f });
+    ragdoll.AddToWorld(&world);
 
     SetTargetFPS(60);
 
     // ログファイルの準備
     std::ofstream logFile("physics_log.csv");
     if (logFile.is_open()) {
-        logFile << "Frame,Box1_Y,Box2_Y,TargetAngle,CurrentAngle,MotorTorque\n";
+        logFile << "Frame,TargetAngle,CurrentAngle,MotorTorque\n";
     }
     int frameCount = 0;
 
@@ -101,23 +60,19 @@ int main(void)
         // 物理演算の更新処理
         float deltaTime = GetFrameTime(); // 前のフレームから何秒経過したか（約0.016秒）
 
-        // AIの命令をシミュレート
-        // サイン波を使って、時間経過で -90度 から +90度 まで目標角度を変化させる
-        joint.targetAngle = sinf(GetTime() * 3.0f) * 90.0f;
+        // AI脳のシミュレート（モーターに歩行命令を送る）
+        ragdoll.UpdateMotors(GetTime());
 
         // 物理ワールドの更新
         world.Step(deltaTime);
 
-        // ログの書き込み（スリープしていない間だけ記録）
+        // ログの書き込み（左の股関節のデータを記録）
         if (logFile.is_open()) {
             logFile << frameCount << ","
-                    << box1.position.y << ","
-                    << box2.position.y << ","
-                    << joint.targetAngle << ","
-                    << joint.debugCurrentAngle << ","
-                    << joint.debugMotorTorque << "\n";
+                    << ragdoll.joints[0]->targetAngle << ","
+                    << ragdoll.joints[0]->debugCurrentAngle << ","
+                    << ragdoll.joints[0]->debugMotorTorque << "\n";
         }
-
 
         // カメラの制御（右クリックドラッグ時のみ）
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) DisableCursor();
@@ -152,18 +107,19 @@ int main(void)
 
             // 3D空間の描画モードを開始
             BeginMode3D(camera);
-                // Worldに登録されている全ての剛体を自動で描画
+                // 剛体の描画
                 for (RigidBody* body : world.GetBodies()) {
-                    // 固定物はグレー、動くものは赤で描画
                     DrawOBB(*body, body->isStatic ? GRAY : RED);
                 }
                 
-                // ジョイントの繋がりを視覚化する線を描画
-                Vector3 pA = Vector3Add(box1.position, Vector3RotateByQuaternion(joint.localAnchorA, box1.orientation));
-                Vector3 pB = Vector3Add(box2.position, Vector3RotateByQuaternion(joint.localAnchorB, box2.orientation));
-                DrawLine3D(box1.position, pA, GREEN); // 箱1からアンカーまで
-                DrawLine3D(box2.position, pB, GREEN); // 箱2からアンカーまで
-                DrawSphere(pA, 0.1f, GREEN); // アンカー部分に緑の球体を描画
+                // ジョイントの描画
+                for (Joint* joint : world.joints) {
+                    Vector3 pA = Vector3Add(joint->bodyA->position, Vector3RotateByQuaternion(joint->localAnchorA, joint->bodyA->orientation));
+                    Vector3 pB = Vector3Add(joint->bodyB->position, Vector3RotateByQuaternion(joint->localAnchorB, joint->bodyB->orientation));
+                    DrawLine3D(joint->bodyA->position, pA, GREEN);
+                    DrawLine3D(joint->bodyB->position, pB, GREEN);
+                    DrawSphere(pA, 0.08f, GREEN);
+                }
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）

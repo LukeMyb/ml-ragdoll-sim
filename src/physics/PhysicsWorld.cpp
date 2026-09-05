@@ -281,7 +281,7 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
 
             // ヒンジ軸(Z軸)のズレを直す
             // AのZ軸とBのZ軸が常に平行になるように（横に捻じれないように）押し戻す
-            Vector3 alignAxis = Vector3CrossProduct(aZ, bZ); 
+            Vector3 alignAxis = Vector3CrossProduct(aX, bX);
             Vector3 alignCorrection = Vector3Scale(alignAxis, 0.2f / totalInvMass);
             if (!a->isStatic) a->angularVelocity = Vector3Add(a->angularVelocity, Vector3Scale(alignCorrection, invMassA));
             if (!b->isStatic) b->angularVelocity = Vector3Subtract(b->angularVelocity, Vector3Scale(alignCorrection, invMassB));
@@ -289,31 +289,32 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
             // Z軸周りの曲がり角度を制限する
             // AのXY平面から見て、BのY軸がどれくらい傾いているかを計算 (atan2を使用)
             float dotY = Vector3DotProduct(bY, aY);
-            float dotX = -Vector3DotProduct(bY, aX);
-            float currentAngle = atan2f(dotX, dotY) * RAD2DEG; // 現在の曲がり角度(度)
+            float dotZ = Vector3DotProduct(bY, aZ);
+            float currentAngle = atan2f(dotZ, dotY) * RAD2DEG;
 
             // ログ用に保存
             joint->debugCurrentAngle = currentAngle;
+
+            // 相対角速度を先に計算しておく（モーターとストッパーの両方で使うため）
+            Vector3 relOmega = Vector3Subtract(b->angularVelocity, a->angularVelocity);
+            float relOmegaX = Vector3DotProduct(relOmega, aX);
 
             // --- モーター制御 (PD制御) ---
             if (joint->motorEnabled) {
                 // 角度の誤差（ラジアン）
                 float error = (joint->targetAngle - currentAngle) * DEG2RAD;
-                
-                // 現在のヒンジ軸(Z軸)周りの相対角速度
-                Vector3 relOmega = Vector3Subtract(b->angularVelocity, a->angularVelocity);
-                float relOmegaZ = Vector3DotProduct(relOmega, aZ);
 
                 // PD制御の計算式： トルク = P * 誤差 - D * 現在の速度
-                float motorTorque = (error * joint->motorP) - (relOmegaZ * joint->motorD);
+                float motorTorque = (error * joint->motorP) - (relOmegaX * joint->motorD);
 
                 // ログ用に保存
                 joint->debugMotorTorque = motorTorque;
                 
                 // トルクを1フレーム分の角力積（インパルス）に変換して適用
-                Vector3 motorImpulse = Vector3Scale(aZ, motorTorque * deltaTime);
-                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(motorImpulse, invMassA / totalInvMass));
-                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(motorImpulse, invMassB / totalInvMass));
+                Vector3 motorImpulse = Vector3Scale(aX, motorTorque * deltaTime);
+                // 慣性テンソルを使った正しい角速度更新
+                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, a->ComputeWorldInverseInertia(motorImpulse));
+                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(motorImpulse));
             }
 
             // 制限角度を超えていたら、押し戻すための角度(補正量)を計算
@@ -323,25 +324,28 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
 
             // 角度の限界を超えていた場合、絶対に超えられない「壁」として機能させる
             if (correctionAngle != 0.0f) {
-                // 行き過ぎようとする速度を完全に殺す（ハードストッパー）
-                Vector3 relOmega = Vector3Subtract(b->angularVelocity, a->angularVelocity);
-                float relOmegaZ = Vector3DotProduct(relOmega, aZ);
-                
-                float stopOmega = 0.0f;
-                // 限界を超えてさらに外側へ向かっている場合のみ、その速度を相殺する
-                if (currentAngle < joint->minAngle && relOmegaZ < 0.0f) stopOmega = -relOmegaZ;
-                if (currentAngle > joint->maxAngle && relOmegaZ > 0.0f) stopOmega = -relOmegaZ;
-
-                // めり込みを戻すための速度 (deltaTimeで割ることで、即座に押し戻す強い力になる)
+                // 慣性テンソルを用いた衝突解決と同等の「厳密なインパルス計算」
                 float baumgarteOmega = (correctionAngle * DEG2RAD * 0.2f) / deltaTime;
+                
+                // 回転しにくさ（慣性）を計算
+                Vector3 invI_aX = a->isStatic ? Vector3{0,0,0} : a->ComputeWorldInverseInertia(aX);
+                Vector3 invI_bX = b->isStatic ? Vector3{0,0,0} : b->ComputeWorldInverseInertia(aX);
+                
+                // 分母（質量比ではなく、回転のしにくさの合計）
+                float j_denominator = Vector3DotProduct(invI_aX, aX) + Vector3DotProduct(invI_bX, aX);
 
-                // 合計の補正角速度を計算
-                float requiredDeltaOmega = stopOmega + baumgarteOmega;
-
-                // 力積（インパルス）に変換して適用
-                Vector3 limitImpulse = Vector3Scale(aZ, requiredDeltaOmega / totalInvMass);
-                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(limitImpulse, invMassA));
-                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(limitImpulse, invMassB));
+                if (j_denominator > 0.0f) {
+                    float desiredDeltaOmega = baumgarteOmega - relOmegaX;
+                    float j = desiredDeltaOmega / j_denominator;
+                    
+                    // 限界を超えようとしている方向の時だけ力を加える
+                    if ((correctionAngle > 0.0f && j > 0.0f) || (correctionAngle < 0.0f && j < 0.0f)) {
+                        Vector3 limitImpulse = Vector3Scale(aX, j);
+                        // ここも質量ではなく慣性テンソルで適用
+                        if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, a->ComputeWorldInverseInertia(limitImpulse));
+                        if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(limitImpulse));
+                    }
+                }
             }
         }
     }
