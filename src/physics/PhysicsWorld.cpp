@@ -267,5 +267,42 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
                 }
             }
         }
+
+        // --- 回転拘束（ヒンジ制限） ---
+        if (joint->isHinge) {
+            // AとBのローカル軸（X, Y, Z）がワールド空間でどちらを向いているか取得
+            Vector3 aX = Vector3RotateByQuaternion(Vector3{1,0,0}, a->orientation);
+            Vector3 aY = Vector3RotateByQuaternion(Vector3{0,1,0}, a->orientation);
+            Vector3 aZ = Vector3RotateByQuaternion(Vector3{0,0,1}, a->orientation);
+
+            Vector3 bX = Vector3RotateByQuaternion(Vector3{1,0,0}, b->orientation);
+            Vector3 bY = Vector3RotateByQuaternion(Vector3{0,1,0}, b->orientation);
+            Vector3 bZ = Vector3RotateByQuaternion(Vector3{0,0,1}, b->orientation);
+
+            // ヒンジ軸(Z軸)のズレを直す
+            // AのZ軸とBのZ軸が常に平行になるように（横に捻じれないように）押し戻す
+            Vector3 alignAxis = Vector3CrossProduct(aZ, bZ); 
+            Vector3 alignCorrection = Vector3Scale(alignAxis, 0.2f / totalInvMass);
+            if (!a->isStatic) a->angularVelocity = Vector3Add(a->angularVelocity, Vector3Scale(alignCorrection, invMassA));
+            if (!b->isStatic) b->angularVelocity = Vector3Subtract(b->angularVelocity, Vector3Scale(alignCorrection, invMassB));
+
+            // Z軸周りの曲がり角度を制限する
+            // AのXY平面から見て、BのY軸がどれくらい傾いているかを計算 (atan2を使用)
+            float dotY = Vector3DotProduct(bY, aY);
+            float dotX = Vector3DotProduct(bY, aX);
+            float currentAngle = atan2f(dotX, dotY) * RAD2DEG; // 現在の曲がり角度(度)
+
+            // 制限角度を超えていたら、押し戻すための角度(補正量)を計算
+            float correctionAngle = 0.0f;
+            if (currentAngle < joint->minAngle) correctionAngle = joint->minAngle - currentAngle;
+            if (currentAngle > joint->maxAngle) correctionAngle = joint->maxAngle - currentAngle;
+
+            // 角度の限界を超えていた場合、Z軸を軸にして回転力を加える
+            if (correctionAngle != 0.0f) {
+                Vector3 limitCorrection = Vector3Scale(aZ, (correctionAngle * DEG2RAD * 0.2f) / totalInvMass);
+                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(limitCorrection, invMassA));
+                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(limitCorrection, invMassB));
+            }
+        }
     }
 }

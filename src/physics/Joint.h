@@ -11,6 +11,11 @@ struct Joint {
     Vector3 localAnchorA;
     Vector3 localAnchorB;
 
+    // ヒンジジョイントの設定
+    bool isHinge = false;    // trueならZ軸をヒンジ軸として振る舞う
+    float minAngle = -45.0f; // 最小角度（度）
+    float maxAngle = 45.0f;  // 最大角度（度）
+
     // ジョイントの初期化と接続位置の設定
     void Init(RigidBody* a, RigidBody* b, Vector3 anchorWorld) {
         bodyA = a;

@@ -28,21 +28,22 @@ int main(void)
     box1.position = Vector3{ 0.0f, 10.0f, 0.0f };
     box1.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box1.mass = 1.0f;
-    box1.size = Vector3{ 1.0f, 1.0f, 1.0f };
+    box1.size = Vector3{ 1.0f, 2.0f, 1.0f };
     box1.orientation = QuaternionIdentity();
     box1.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box1.isStatic = true; // 箱1は空中に固定する
     box1.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f };
 
-    // 箱2を作成（箱1と完全に同じ位置に配置＝完全に重なっている状態）
+    // 箱2を作成
     RigidBody box2;
-    // 箱1から横(X方向)にズラした位置に配置（落下すると振り子のように揺れる）
-    box2.position = Vector3{ 3.0f, 10.0f, 0.0f }; 
+    // 太もものすぐ下に配置（中心座標の差が2.0なので、隙間なくくっつく）
+    box2.position = Vector3{ 0.0f, 8.0f, 0.0f }; 
     box2.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box2.mass = 1.0f;
-    box2.size = Vector3{ 1.5f, 1.5f, 1.5f };
+    box2.size = Vector3{ 1.0f, 2.0f, 1.0f };
     box2.orientation = QuaternionIdentity();
-    box2.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    // テストのため、X軸回り（前か後ろ）に強い回転の勢いを与えておく
+    box2.angularVelocity = Vector3{ 0.0f, 0.0f, 10.0f }; // Z軸回りに回転させる
     box2.isStatic = false;
     box2.localInertiaInverse = Vector3{
         12.0f / (box2.mass * (box2.size.y * box2.size.y + box2.size.z * box2.size.z)),
@@ -50,9 +51,14 @@ int main(void)
         12.0f / (box2.mass * (box2.size.x * box2.size.x + box2.size.y * box2.size.y))
     };
 
-    // 箱1と箱2の中間地点(X=1.5, Y=10.0)を繋ぎ目(アンカー)としてジョイントを作成
+    // 膝関節ジョイントの作成
     Joint joint;
-    joint.Init(&box1, &box2, Vector3{ 1.5f, 10.0f, 0.0f });
+    joint.Init(&box1, &box2, Vector3{ 0.0f, 9.0f, 0.0f });
+
+    // ヒンジの設定を有効にする
+    joint.isHinge = true;
+    joint.minAngle = -45.0f; // -45度までしか曲がらない
+    joint.maxAngle = 45.0f;  // +45度までしか曲がらない
 
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
