@@ -4,6 +4,11 @@ void PhysicsWorld::AddBody(RigidBody* body) {
     bodies.push_back(body);
 }
 
+// ジョイントの登録処理
+void PhysicsWorld::AddJoint(Joint* joint) {
+    joints.push_back(joint);
+}
+
 void PhysicsWorld::Step(float deltaTime) {
     debugContactPoints.clear();
 
@@ -45,6 +50,9 @@ void PhysicsWorld::Step(float deltaTime) {
             }
         }
     }
+
+    // ジョイントの解決（繋ぎ止める処理）
+    ResolveJoints(deltaTime);
 
     // スリープ判定
     for (RigidBody* body : bodies) {
@@ -180,6 +188,84 @@ void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionI
             b->velocity = Vector3Subtract(b->velocity, Vector3Scale(frictionImpulse, invMassB));
             Vector3 rxFriction_B_neg = Vector3Scale(Vector3CrossProduct(rB, frictionImpulse), -1.0f);
             b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(rxFriction_B_neg));
+        }
+    }
+}
+
+// ジョイントの拘束を解決する実装
+void PhysicsWorld::ResolveJoints(float deltaTime) {
+    for (Joint* joint : joints) {
+        RigidBody* a = joint->bodyA;
+        RigidBody* b = joint->bodyB;
+
+        // ローカルのアンカー位置を、現在の傾きに合わせてワールド座標のベクトルに変換
+        Vector3 rA = Vector3RotateByQuaternion(joint->localAnchorA, a->orientation);
+        Vector3 rB = Vector3RotateByQuaternion(joint->localAnchorB, b->orientation);
+
+        // アンカーの実際のワールド座標
+        Vector3 pA = Vector3Add(a->position, rA);
+        Vector3 pB = Vector3Add(b->position, rB);
+
+        // アンカー間のズレ
+        Vector3 diff = Vector3Subtract(pB, pA);
+
+        float invMassA = a->isStatic ? 0.0f : (1.0f / a->mass);
+        float invMassB = b->isStatic ? 0.0f : (1.0f / b->mass);
+        float totalInvMass = invMassA + invMassB;
+
+        if (totalInvMass <= 0.0f) continue;
+
+        // --- 位置の直接補正 (Baumgarte安定化) ---
+        // めり込み解消と同じ理屈で、ズレた分だけ強制的に座標を寄せる
+        const float percent = 0.2f; 
+        Vector3 correction = Vector3Scale(diff, percent / totalInvMass);
+        if (!a->isStatic) a->position = Vector3Add(a->position, Vector3Scale(correction, invMassA));
+        if (!b->isStatic) b->position = Vector3Subtract(b->position, Vector3Scale(correction, invMassB));
+
+        // --- 速度の補正 (インパルス拘束) ---
+        // 衝突の摩擦と同じ理屈で、X, Y, Zの3軸についてアンカー間の相対速度をゼロにする
+        Vector3 axes[3] = { {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f} };
+        for (int i = 0; i < 3; i++) {
+            Vector3 axis = axes[i];
+
+            // アンカーポイントでのそれぞれの速度
+            Vector3 velA = Vector3Add(a->velocity, Vector3CrossProduct(a->angularVelocity, rA));
+            Vector3 velB = Vector3Add(b->velocity, Vector3CrossProduct(b->angularVelocity, rB));
+            Vector3 relVel = Vector3Subtract(velA, velB);
+
+            // 注目している軸方向の速度差
+            float relVelAlongAxis = Vector3DotProduct(relVel, axis);
+
+            // 速度差を打ち消すための力積（インパルス）の分母計算
+            Vector3 rxn_A = Vector3CrossProduct(rA, axis);
+            Vector3 invI_rxn_A = a->isStatic ? Vector3{0,0,0} : a->ComputeWorldInverseInertia(rxn_A);
+            Vector3 crossTerm_A = Vector3CrossProduct(invI_rxn_A, rA);
+
+            Vector3 rxn_B = Vector3CrossProduct(rB, axis);
+            Vector3 invI_rxn_B = b->isStatic ? Vector3{0,0,0} : b->ComputeWorldInverseInertia(rxn_B);
+            Vector3 crossTerm_B = Vector3CrossProduct(invI_rxn_B, rB);
+
+            float j_denominator = totalInvMass 
+                + Vector3DotProduct(crossTerm_A, axis) 
+                + Vector3DotProduct(crossTerm_B, axis);
+
+            if (j_denominator > 0.0f) {
+                // 速度差をちょうど0にする力積
+                float j = -relVelAlongAxis / j_denominator;
+                Vector3 impulse = Vector3Scale(axis, j);
+
+                // 力積の適用（速度と角速度の変化）
+                if (!a->isStatic) {
+                    a->velocity = Vector3Add(a->velocity, Vector3Scale(impulse, invMassA));
+                    Vector3 rxJ_A = Vector3CrossProduct(rA, impulse);
+                    a->angularVelocity = Vector3Add(a->angularVelocity, a->ComputeWorldInverseInertia(rxJ_A));
+                }
+                if (!b->isStatic) {
+                    b->velocity = Vector3Subtract(b->velocity, Vector3Scale(impulse, invMassB));
+                    Vector3 rxJ_B_neg = Vector3Scale(Vector3CrossProduct(rB, impulse), -1.0f);
+                    b->angularVelocity = Vector3Add(b->angularVelocity, b->ComputeWorldInverseInertia(rxJ_B_neg));
+                }
+            }
         }
     }
 }

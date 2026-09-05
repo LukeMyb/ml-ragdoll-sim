@@ -28,22 +28,31 @@ int main(void)
     box1.position = Vector3{ 0.0f, 10.0f, 0.0f };
     box1.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box1.mass = 1.0f;
-    box1.size = Vector3{ 2.0f, 2.0f, 2.0f };
-    box1.orientation = QuaternionFromAxisAngle(Vector3{ 1.0f, 0.0f, 0.0f }, 30.0f * DEG2RAD);
+    box1.size = Vector3{ 1.0f, 1.0f, 1.0f };
+    box1.orientation = QuaternionIdentity();
     box1.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
-    box1.isStatic = false;
-    box1.localInertiaInverse = Vector3{ 1.0f, 1.0f, 1.0f }; // 簡易的な逆慣性テンソル
+    box1.isStatic = true; // 箱1は空中に固定する
+    box1.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f };
 
     // 箱2を作成（箱1と完全に同じ位置に配置＝完全に重なっている状態）
     RigidBody box2;
-    box2.position = Vector3{ 0.0f, 10.0f, 0.0f }; // 箱1と同じ位置
+    // 箱1から横(X方向)にズラした位置に配置（落下すると振り子のように揺れる）
+    box2.position = Vector3{ 3.0f, 10.0f, 0.0f }; 
     box2.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box2.mass = 1.0f;
-    box2.size = Vector3{ 1.5f, 1.5f, 1.5f };      // 色分けの代わりに少しサイズを変える
-    box2.orientation = QuaternionFromAxisAngle(Vector3{ 0.0f, 0.0f, 1.0f }, 60.0f * DEG2RAD);
+    box2.size = Vector3{ 1.5f, 1.5f, 1.5f };
+    box2.orientation = QuaternionIdentity();
     box2.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
     box2.isStatic = false;
-    box2.localInertiaInverse = Vector3{ 1.0f, 1.0f, 1.0f };
+    box2.localInertiaInverse = Vector3{
+        12.0f / (box2.mass * (box2.size.y * box2.size.y + box2.size.z * box2.size.z)),
+        12.0f / (box2.mass * (box2.size.x * box2.size.x + box2.size.z * box2.size.z)),
+        12.0f / (box2.mass * (box2.size.x * box2.size.x + box2.size.y * box2.size.y))
+    };
+
+    // 箱1と箱2の中間地点(X=1.5, Y=10.0)を繋ぎ目(アンカー)としてジョイントを作成
+    Joint joint;
+    joint.Init(&box1, &box2, Vector3{ 1.5f, 10.0f, 0.0f });
 
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
@@ -65,6 +74,7 @@ int main(void)
     world.AddBody(&box1); 
     world.AddBody(&box2);
     world.AddBody(&floor);
+    world.AddJoint(&joint);
 
     SetTargetFPS(60);
 
@@ -133,10 +143,12 @@ int main(void)
                     DrawOBB(*body, body->isStatic ? GRAY : RED);
                 }
                 
-                // 衝突点のデバッグ描画（複数対応）
-                for (Vector3 contact : world.debugContactPoints) {
-                    DrawSphere(contact, 0.15f, BLUE);
-                }
+                // ジョイントの繋がりを視覚化する線を描画
+                Vector3 pA = Vector3Add(box1.position, Vector3RotateByQuaternion(joint.localAnchorA, box1.orientation));
+                Vector3 pB = Vector3Add(box2.position, Vector3RotateByQuaternion(joint.localAnchorB, box2.orientation));
+                DrawLine3D(box1.position, pA, GREEN); // 箱1からアンカーまで
+                DrawLine3D(box2.position, pB, GREEN); // 箱2からアンカーまで
+                DrawSphere(pA, 0.1f, GREEN); // アンカー部分に緑の球体を描画
             EndMode3D();
 
             // 画面の左上にテキストを描画（ここは2D描画）
