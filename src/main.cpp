@@ -23,22 +23,27 @@ int main(void)
     camera.fovy = 45.0f;                                // 視野角
     camera.projection = CAMERA_PERSPECTIVE;             // 透視投影（遠近法）
 
-    // 落下させる箱（RigidBody）の初期化
-    RigidBody box;
-    box.position = Vector3{ 0.0f, 10.0f, 0.0f }; // 少し高い位置(Y=10)からスタート
-    box.velocity = Vector3{ 0.0f, 0.0f, 0.0f };  // 初速はゼロ
-    box.mass = 1.0f;                             // 質量は1.0kg
-    box.size = Vector3{ 2.0f, 2.0f, 2.0f };      // 箱のサイズ
-    box.orientation = QuaternionIdentity();            // 無回転状態でスタート
-    box.angularVelocity = Vector3{ 2.0f, 1.0f, 1.5f }; // テスト用に適当な角速度（回転の勢い）を与える
-    box.isStatic = false;
+    // 箱1を作成
+    RigidBody box1;
+    box1.position = Vector3{ 0.0f, 10.0f, 0.0f };
+    box1.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    box1.mass = 1.0f;
+    box1.size = Vector3{ 2.0f, 2.0f, 2.0f };
+    box1.orientation = QuaternionFromAxisAngle(Vector3{ 1.0f, 0.0f, 0.0f }, 30.0f * DEG2RAD);
+    box1.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    box1.isStatic = false;
+    box1.localInertiaInverse = Vector3{ 1.0f, 1.0f, 1.0f }; // 簡易的な逆慣性テンソル
 
-    // 箱の慣性テンソルの逆数を計算 (1 / Ix, Iy, Iz)
-    box.localInertiaInverse = Vector3{
-        12.0f / (box.mass * (box.size.y * box.size.y + box.size.z * box.size.z)),
-        12.0f / (box.mass * (box.size.x * box.size.x + box.size.z * box.size.z)),
-        12.0f / (box.mass * (box.size.x * box.size.x + box.size.y * box.size.y))
-    };
+    // 箱2を作成（箱1と完全に同じ位置に配置＝完全に重なっている状態）
+    RigidBody box2;
+    box2.position = Vector3{ 0.0f, 10.0f, 0.0f }; // 箱1と同じ位置
+    box2.velocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    box2.mass = 1.0f;
+    box2.size = Vector3{ 1.5f, 1.5f, 1.5f };      // 色分けの代わりに少しサイズを変える
+    box2.orientation = QuaternionFromAxisAngle(Vector3{ 0.0f, 0.0f, 1.0f }, 60.0f * DEG2RAD);
+    box2.angularVelocity = Vector3{ 0.0f, 0.0f, 0.0f };
+    box2.isStatic = false;
+    box2.localInertiaInverse = Vector3{ 1.0f, 1.0f, 1.0f };
 
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
@@ -52,9 +57,13 @@ int main(void)
     floor.isStatic = true; // 重力や衝突で動かないようにする
     floor.localInertiaInverse = Vector3{ 0.0f, 0.0f, 0.0f }; // 固定物なので回転しにくさは無限大(逆数は0)
 
+    // 箱1と箱2はお互いに衝突しないように設定
+    box1.IgnoreCollisionWith(&box2);
+
     // 物理ワールドの作成と剛体の登録
     PhysicsWorld world;
-    world.AddBody(&box);
+    world.AddBody(&box1); 
+    world.AddBody(&box2);
     world.AddBody(&floor);
 
     SetTargetFPS(60);
@@ -77,11 +86,11 @@ int main(void)
         world.Step(deltaTime);
 
         // ログの書き込み（スリープしていない間だけ記録）
-        if (logFile.is_open() && !box.isSleeping) {
+        if (logFile.is_open() && !box1.isSleeping) {
             logFile << frameCount << ","
-                    << box.position.y << ","
-                    << box.velocity.y << ","
-                    << Vector3Length(box.angularVelocity) << "\n";
+                    << box1.position.y << ","
+                    << box1.velocity.y << ","
+                    << Vector3Length(box1.angularVelocity) << "\n";
         }
 
 

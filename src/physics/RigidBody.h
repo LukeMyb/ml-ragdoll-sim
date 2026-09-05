@@ -1,5 +1,6 @@
 #pragma once
 #include "raymath.h"
+#include <vector>
 
 // 物理演算用の構造体
 struct RigidBody {
@@ -20,6 +21,12 @@ struct RigidBody {
     // 物理エンジンのスリープ（休止）システム
     bool isSleeping = false;
     float sleepTimer = 0.0f;
+
+    // 衝突判定を無視する相手のリスト
+    std::vector<RigidBody*> ignoredBodies;
+
+    // お互いの無視リストに登録するヘルパー関数の宣言
+    void IgnoreCollisionWith(RigidBody* other);
     
     // メソッドの宣言のみ
     void ApplyForce(Vector3 force, float deltaTime);

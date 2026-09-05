@@ -25,6 +25,16 @@ void PhysicsWorld::Step(float deltaTime) {
             // 両方とも固定物、またはスリープ中の場合は判定スキップ
             if ((a->isStatic || a->isSleeping) && (b->isStatic || b->isSleeping)) continue;
 
+            // 衝突除外リストに含まれているかチェック
+            bool shouldIgnore = false;
+            for (RigidBody* ignored : a->ignoredBodies) {
+                if (ignored == b) {
+                    shouldIgnore = true;
+                    break;
+                }
+            }
+            if (shouldIgnore) continue; // 無視リストに入っていればSAT判定自体を行わない
+
             CollisionInfo info;
             if (CheckCollisionSAT(*a, *b, &info)) {
                 ResolveCollision(a, b, info);

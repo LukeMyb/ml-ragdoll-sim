@@ -61,3 +61,11 @@ Vector3 RigidBody::ComputeWorldInverseInertia(Vector3 v) const {
     };
     return Vector3RotateByQuaternion(invI_vLocal, orientation);
 }
+
+// お互いの無視リストに登録する
+void RigidBody::IgnoreCollisionWith(RigidBody* other) {
+    // 自身(this)のリストに相手を追加
+    this->ignoredBodies.push_back(other);
+    // 相手(other)のリストに自身を追加
+    other->ignoredBodies.push_back(this);
+}
