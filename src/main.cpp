@@ -60,6 +60,9 @@ int main(void)
     joint.minAngle = -45.0f; // -45度までしか曲がらない
     joint.maxAngle = 45.0f;  // +45度までしか曲がらない
 
+    // モーターをオンにする
+    joint.motorEnabled = true;
+
     // 床を「巨大な固定された箱」として作成
     RigidBody floor;
     // 上の面がY=0になるように、Y位置を厚みの半分だけ下げる
@@ -87,7 +90,7 @@ int main(void)
     // ログファイルの準備
     std::ofstream logFile("physics_log.csv");
     if (logFile.is_open()) {
-        logFile << "Frame,PosY,VelY,AngularSpeed\n"; // ヘッダ行
+        logFile << "Frame,Box1_Y,Box2_Y,TargetAngle,CurrentAngle,MotorTorque\n";
     }
     int frameCount = 0;
 
@@ -98,15 +101,21 @@ int main(void)
         // 物理演算の更新処理
         float deltaTime = GetFrameTime(); // 前のフレームから何秒経過したか（約0.016秒）
 
+        // AIの命令をシミュレート
+        // サイン波を使って、時間経過で -90度 から +90度 まで目標角度を変化させる
+        joint.targetAngle = sinf(GetTime() * 3.0f) * 90.0f;
+
         // 物理ワールドの更新
         world.Step(deltaTime);
 
         // ログの書き込み（スリープしていない間だけ記録）
-        if (logFile.is_open() && !box1.isSleeping) {
+        if (logFile.is_open()) {
             logFile << frameCount << ","
                     << box1.position.y << ","
-                    << box1.velocity.y << ","
-                    << Vector3Length(box1.angularVelocity) << "\n";
+                    << box2.position.y << ","
+                    << joint.targetAngle << ","
+                    << joint.debugCurrentAngle << ","
+                    << joint.debugMotorTorque << "\n";
         }
 
 

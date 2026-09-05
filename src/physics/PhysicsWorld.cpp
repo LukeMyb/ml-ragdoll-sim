@@ -289,19 +289,59 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
             // Z軸周りの曲がり角度を制限する
             // AのXY平面から見て、BのY軸がどれくらい傾いているかを計算 (atan2を使用)
             float dotY = Vector3DotProduct(bY, aY);
-            float dotX = Vector3DotProduct(bY, aX);
+            float dotX = -Vector3DotProduct(bY, aX);
             float currentAngle = atan2f(dotX, dotY) * RAD2DEG; // 現在の曲がり角度(度)
+
+            // ログ用に保存
+            joint->debugCurrentAngle = currentAngle;
+
+            // --- モーター制御 (PD制御) ---
+            if (joint->motorEnabled) {
+                // 角度の誤差（ラジアン）
+                float error = (joint->targetAngle - currentAngle) * DEG2RAD;
+                
+                // 現在のヒンジ軸(Z軸)周りの相対角速度
+                Vector3 relOmega = Vector3Subtract(b->angularVelocity, a->angularVelocity);
+                float relOmegaZ = Vector3DotProduct(relOmega, aZ);
+
+                // PD制御の計算式： トルク = P * 誤差 - D * 現在の速度
+                float motorTorque = (error * joint->motorP) - (relOmegaZ * joint->motorD);
+
+                // ログ用に保存
+                joint->debugMotorTorque = motorTorque;
+                
+                // トルクを1フレーム分の角力積（インパルス）に変換して適用
+                Vector3 motorImpulse = Vector3Scale(aZ, motorTorque * deltaTime);
+                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(motorImpulse, invMassA / totalInvMass));
+                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(motorImpulse, invMassB / totalInvMass));
+            }
 
             // 制限角度を超えていたら、押し戻すための角度(補正量)を計算
             float correctionAngle = 0.0f;
             if (currentAngle < joint->minAngle) correctionAngle = joint->minAngle - currentAngle;
             if (currentAngle > joint->maxAngle) correctionAngle = joint->maxAngle - currentAngle;
 
-            // 角度の限界を超えていた場合、Z軸を軸にして回転力を加える
+            // 角度の限界を超えていた場合、絶対に超えられない「壁」として機能させる
             if (correctionAngle != 0.0f) {
-                Vector3 limitCorrection = Vector3Scale(aZ, (correctionAngle * DEG2RAD * 0.2f) / totalInvMass);
-                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(limitCorrection, invMassA));
-                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(limitCorrection, invMassB));
+                // 行き過ぎようとする速度を完全に殺す（ハードストッパー）
+                Vector3 relOmega = Vector3Subtract(b->angularVelocity, a->angularVelocity);
+                float relOmegaZ = Vector3DotProduct(relOmega, aZ);
+                
+                float stopOmega = 0.0f;
+                // 限界を超えてさらに外側へ向かっている場合のみ、その速度を相殺する
+                if (currentAngle < joint->minAngle && relOmegaZ < 0.0f) stopOmega = -relOmegaZ;
+                if (currentAngle > joint->maxAngle && relOmegaZ > 0.0f) stopOmega = -relOmegaZ;
+
+                // めり込みを戻すための速度 (deltaTimeで割ることで、即座に押し戻す強い力になる)
+                float baumgarteOmega = (correctionAngle * DEG2RAD * 0.2f) / deltaTime;
+
+                // 合計の補正角速度を計算
+                float requiredDeltaOmega = stopOmega + baumgarteOmega;
+
+                // 力積（インパルス）に変換して適用
+                Vector3 limitImpulse = Vector3Scale(aZ, requiredDeltaOmega / totalInvMass);
+                if (!a->isStatic) a->angularVelocity = Vector3Subtract(a->angularVelocity, Vector3Scale(limitImpulse, invMassA));
+                if (!b->isStatic) b->angularVelocity = Vector3Add(b->angularVelocity, Vector3Scale(limitImpulse, invMassB));
             }
         }
     }

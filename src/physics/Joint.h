@@ -16,6 +16,16 @@ struct Joint {
     float minAngle = -45.0f; // 最小角度（度）
     float maxAngle = 45.0f;  // 最大角度（度）
 
+    // モーター（PD制御）の設定
+    bool motorEnabled = false;
+    float targetAngle = 0.0f; // 目指す角度（度）
+    float motorP = 150.0f;    // Pゲイン（目標に向かうバネの強さ）
+    float motorD = 15.0f;     // Dゲイン（行き過ぎを防ぐブレーキの強さ）
+
+    // ログ出力・デバッグ用の変数
+    float debugCurrentAngle = 0.0f;
+    float debugMotorTorque = 0.0f;
+
     // ジョイントの初期化と接続位置の設定
     void Init(RigidBody* a, RigidBody* b, Vector3 anchorWorld) {
         bodyA = a;
