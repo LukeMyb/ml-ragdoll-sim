@@ -29,6 +29,9 @@ private:
     // aとbの双方が動くことを考慮した汎用的な衝突解決
     void ResolveCollision(RigidBody* a, RigidBody* b, const CollisionInfo& info);
 
+    // 全ペアの衝突判定と解決をまとめて行うヘルパー
+    void SolveCollisions();
+
     // ジョイントの拘束（離れないようにする）を解決する関数
     void ResolveJoints(float deltaTime);
 };

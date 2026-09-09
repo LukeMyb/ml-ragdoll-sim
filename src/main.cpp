@@ -49,7 +49,7 @@ int main(void)
     // ログファイルの準備
     std::ofstream logFile("physics_log.csv");
     if (logFile.is_open()) {
-        logFile << "Frame,TargetAngle,CurrentAngle,MotorTorque\n";
+        logFile << "Frame,TorsoY,LeftThighY,LeftShinY,RightThighY,RightShinY,TargetAngle,CurrentAngle,MotorTorque\n";
     }
     int frameCount = 0;
 
@@ -66,9 +66,14 @@ int main(void)
         // 物理ワールドの更新
         world.Step(deltaTime);
 
-        // ログの書き込み（左の股関節のデータを記録）
+        // ログの書き込み（各パーツのY座標と左股関節データを記録）
         if (logFile.is_open()) {
             logFile << frameCount << ","
+                    << ragdoll.bodies[0]->position.y << ","  // TorsoY
+                    << ragdoll.bodies[1]->position.y << ","  // LeftThighY
+                    << ragdoll.bodies[2]->position.y << ","  // LeftShinY
+                    << ragdoll.bodies[3]->position.y << ","  // RightThighY
+                    << ragdoll.bodies[4]->position.y << ","  // RightShinY
                     << ragdoll.joints[0]->targetAngle << ","
                     << ragdoll.joints[0]->debugCurrentAngle << ","
                     << ragdoll.joints[0]->debugMotorTorque << "\n";

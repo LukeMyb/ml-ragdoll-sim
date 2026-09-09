@@ -35,7 +35,7 @@ Joint* Ragdoll::CreateHingeJoint(RigidBody* a, RigidBody* b, Vector3 anchor, flo
     joint->isHinge = true;
     joint->minAngle = minAng;
     joint->maxAngle = maxAng;
-    joint->motorEnabled = true; // デフォルトでモーターON
+    joint->motorEnabled = false; // デフォルトでモーターON
     joint->motorP = 150.0f;
     joint->motorD = 15.0f;
     joints.push_back(joint);
@@ -46,7 +46,7 @@ void Ragdoll::Build(Vector3 startPosition) {
     // --- 剛体の作成 ---
     // 胴体（Torso）: 高めの位置に固定してぶら下げる（後で固定は解除します）
     RigidBody* torso = CreateBody(startPosition, Vector3{ 1.0f, 1.5f, 0.5f }, 2.0f);
-    torso->isStatic = true; // テストのため最初は空中に固定
+    torso->isStatic = false; // テストのため最初は空中に固定
 
     // 左脚（太もも・すね）
     RigidBody* leftThigh = CreateBody(Vector3Add(startPosition, Vector3{-0.3f, -1.5f, 0.0f}), Vector3{0.4f, 1.5f, 0.4f}, 1.0f);

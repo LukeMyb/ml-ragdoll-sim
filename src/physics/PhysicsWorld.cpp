@@ -12,47 +12,43 @@ void PhysicsWorld::AddJoint(Joint* joint) {
 void PhysicsWorld::Step(float deltaTime) {
     debugContactPoints.clear();
 
-    // 重力の適用と位置・姿勢の更新
-    for (RigidBody* body : bodies) {
-        if (!body->isStatic && !body->isSleeping) {
-            Vector3 force = Vector3Scale(gravity, body->mass);
-            body->ApplyForce(force, deltaTime);
-        }
-        body->Update(deltaTime);
-    }
+    // deltaTimeの上限を設定（フレーム落ちによる大ジャンプを防止）
+    if (deltaTime > 1.0f / 30.0f) deltaTime = 1.0f / 30.0f;
 
-    // 衝突判定と解決（総当たり）
-    for (size_t i = 0; i < bodies.size(); i++) {
-        for (size_t j = i + 1; j < bodies.size(); j++) {
-            RigidBody* a = bodies[i];
-            RigidBody* b = bodies[j];
+    // サブステップで物理精度を向上（1フレームを複数回に分けてシミュレーション）
+    const int subSteps = 8;
+    float subDt = deltaTime / (float)subSteps;
 
-            // 両方とも固定物、またはスリープ中の場合は判定スキップ
-            if ((a->isStatic || a->isSleeping) && (b->isStatic || b->isSleeping)) continue;
+    for (int sub = 0; sub < subSteps; sub++) {
 
-            // 衝突除外リストに含まれているかチェック
-            bool shouldIgnore = false;
-            for (RigidBody* ignored : a->ignoredBodies) {
-                if (ignored == b) {
-                    shouldIgnore = true;
-                    break;
-                }
-            }
-            if (shouldIgnore) continue; // 無視リストに入っていればSAT判定自体を行わない
-
-            CollisionInfo info;
-            if (CheckCollisionSAT(*a, *b, &info)) {
-                ResolveCollision(a, b, info);
-                
-                // 衝突が発生したらスリープを解除
-                a->isSleeping = false;
-                b->isSleeping = false;
+        // ステップ1: 重力を速度に加える（位置はまだ動かさない = Semi-implicit Euler）
+        for (RigidBody* body : bodies) {
+            if (!body->isStatic && !body->isSleeping) {
+                Vector3 force = Vector3Scale(gravity, body->mass);
+                body->ApplyForce(force, subDt);
             }
         }
-    }
 
-    // ジョイントの解決（繋ぎ止める処理）
-    ResolveJoints(deltaTime);
+        // ステップ2: 制約の解決（衝突→ジョイント→衝突の順で交互に解決）
+        const int iterations = 6;
+        for (int iter = 0; iter < iterations; iter++) {
+            // 衝突判定と解決
+            SolveCollisions();
+
+            // ジョイント解決（最後のイテレーションでは行わない→衝突を最後にすることで床を優先）
+            if (iter < iterations - 1) {
+                ResolveJoints(subDt);
+            }
+        }
+
+        // ステップ3: 速度を使って位置・姿勢を更新する（ここで初めて移動する）
+        for (RigidBody* body : bodies) {
+            body->Update(subDt);
+        }
+
+        // ステップ4: 移動後にもう一度衝突解決（万が一めり込んでいたら即座に押し戻す）
+        SolveCollisions();
+    }
 
     // スリープ判定
     for (RigidBody* body : bodies) {
@@ -73,6 +69,34 @@ void PhysicsWorld::Step(float deltaTime) {
     }
 }
 
+// 全ペアの衝突判定と解決をまとめて行う
+void PhysicsWorld::SolveCollisions() {
+    for (size_t i = 0; i < bodies.size(); i++) {
+        for (size_t j = i + 1; j < bodies.size(); j++) {
+            RigidBody* a = bodies[i];
+            RigidBody* b = bodies[j];
+
+            if ((a->isStatic || a->isSleeping) && (b->isStatic || b->isSleeping)) continue;
+
+            bool shouldIgnore = false;
+            for (RigidBody* ignored : a->ignoredBodies) {
+                if (ignored == b) {
+                    shouldIgnore = true;
+                    break;
+                }
+            }
+            if (shouldIgnore) continue;
+
+            CollisionInfo info;
+            if (CheckCollisionSAT(*a, *b, &info)) {
+                ResolveCollision(a, b, info);
+                a->isSleeping = false;
+                b->isSleeping = false;
+            }
+        }
+    }
+}
+
 void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionInfo& info) {
     float invMassA = a->isStatic ? 0.0f : (1.0f / a->mass);
     float invMassB = b->isStatic ? 0.0f : (1.0f / b->mass);
@@ -80,16 +104,30 @@ void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionI
 
     if (totalInvMass <= 0.0f) return; // 両方固定物なら何もしない
 
-    // Baumgarte安定化 (めり込みの押し戻し)
-    const float slop = 0.01f;
-    const float percent = 0.2f;
+    // めり込みの即時位置補正（100%押し戻し）
+    // slopは微小な許容誤差（これ以下のめり込みは無視して振動を防ぐ）
+    const float slop = 0.005f;
     float penetration = info.depth - slop;
     if (penetration < 0.0f) penetration = 0.0f;
 
-    // 質量の比率に応じて両方のオブジェクトを押し戻す
-    Vector3 correction = Vector3Scale(info.normal, (penetration * percent) / totalInvMass);
+    // 質量の比率に応じて両方のオブジェクトを押し戻す（100%補正）
+    Vector3 correction = Vector3Scale(info.normal, penetration / totalInvMass);
     if (!a->isStatic) a->position = Vector3Add(a->position, Vector3Scale(correction, invMassA));
     if (!b->isStatic) b->position = Vector3Subtract(b->position, Vector3Scale(correction, invMassB));
+
+    // めり込み方向の速度をクランプ（床に向かう速度を除去）
+    if (!a->isStatic) {
+        float velAlongNormal = Vector3DotProduct(a->velocity, info.normal);
+        if (velAlongNormal < 0.0f) {
+            a->velocity = Vector3Subtract(a->velocity, Vector3Scale(info.normal, velAlongNormal));
+        }
+    }
+    if (!b->isStatic) {
+        float velAlongNormal = Vector3DotProduct(b->velocity, Vector3Scale(info.normal, -1.0f));
+        if (velAlongNormal < 0.0f) {
+            b->velocity = Vector3Subtract(b->velocity, Vector3Scale(Vector3Scale(info.normal, -1.0f), velAlongNormal));
+        }
+    }
 
     // 接触点の平均位置
     Vector3 averageContact = { 0 };
@@ -217,10 +255,29 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
 
         // --- 位置の直接補正 (Baumgarte安定化) ---
         // めり込み解消と同じ理屈で、ズレた分だけ強制的に座標を寄せる
-        const float percent = 0.2f; 
+        // 衝突解決（100%補正）より弱くすることで、床の押し戻しに負けないようにする
+        const float percent = 0.1f; 
         Vector3 correction = Vector3Scale(diff, percent / totalInvMass);
         if (!a->isStatic) a->position = Vector3Add(a->position, Vector3Scale(correction, invMassA));
         if (!b->isStatic) b->position = Vector3Subtract(b->position, Vector3Scale(correction, invMassB));
+
+        // ジョイント補正後の床貫通ガード
+        // ジョイントがパーツを床の下に引き込んだ場合、即座に押し戻す
+        RigidBody* jointBodies[2] = { a, b };
+        for (int bi = 0; bi < 2; bi++) {
+            RigidBody* body = jointBodies[bi];
+            if (body->isStatic) continue;
+            // ボディの最下端を計算（回転を考慮した近似値として半径を使用）
+            float halfExtentY = body->size.y * 0.5f;
+            float bottomY = body->position.y - halfExtentY;
+            if (bottomY < 0.0f) {
+                body->position.y -= bottomY; // Y=0まで押し上げる
+                // 下向き速度も除去
+                if (body->velocity.y < 0.0f) {
+                    body->velocity.y = 0.0f;
+                }
+            }
+        }
 
         // --- 速度の補正 (インパルス拘束) ---
         // 衝突の摩擦と同じ理屈で、X, Y, Zの3軸についてアンカー間の相対速度をゼロにする
