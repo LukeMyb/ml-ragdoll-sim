@@ -115,20 +115,6 @@ void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionI
     if (!a->isStatic) a->position = Vector3Add(a->position, Vector3Scale(correction, invMassA));
     if (!b->isStatic) b->position = Vector3Subtract(b->position, Vector3Scale(correction, invMassB));
 
-    // めり込み方向の速度をクランプ（床に向かう速度を除去）
-    if (!a->isStatic) {
-        float velAlongNormal = Vector3DotProduct(a->velocity, info.normal);
-        if (velAlongNormal < 0.0f) {
-            a->velocity = Vector3Subtract(a->velocity, Vector3Scale(info.normal, velAlongNormal));
-        }
-    }
-    if (!b->isStatic) {
-        float velAlongNormal = Vector3DotProduct(b->velocity, Vector3Scale(info.normal, -1.0f));
-        if (velAlongNormal < 0.0f) {
-            b->velocity = Vector3Subtract(b->velocity, Vector3Scale(Vector3Scale(info.normal, -1.0f), velAlongNormal));
-        }
-    }
-
     // 接触点の平均位置
     Vector3 averageContact = { 0 };
     for (int i = 0; i < info.contactCount; i++) {
@@ -148,10 +134,12 @@ void PhysicsWorld::ResolveCollision(RigidBody* a, RigidBody* b, const CollisionI
     float relVelAlongNormal = Vector3DotProduct(relativeVel, info.normal);
     if (relVelAlongNormal > 0.0f) return; // 離れていく場合は処理しない
 
-    float restitution = 0.6f;
+    // ラグドールは弾まない（反発係数を低く設定）
+    float restitution = 0.1f;
     float spinLoss = 0.95f;
-    if (relVelAlongNormal > -1.0f) {
-        restitution = 0.0f; // 極小速度なら反発しない
+    // 低速接触では完全に反発しない（振動防止）
+    if (relVelAlongNormal > -2.0f) {
+        restitution = 0.0f;
     }
 
     float j_numerator = -(1.0f + restitution) * relVelAlongNormal;
@@ -267,8 +255,13 @@ void PhysicsWorld::ResolveJoints(float deltaTime) {
         for (int bi = 0; bi < 2; bi++) {
             RigidBody* body = jointBodies[bi];
             if (body->isStatic) continue;
-            // ボディの最下端を計算（回転を考慮した近似値として半径を使用）
-            float halfExtentY = body->size.y * 0.5f;
+            // ボディの最下端を計算（回転を考慮したOBBのY方向延長）
+            // 各ローカル軸のY成分の絶対値 × 半サイズ の合計が、ワールドY方向の半径
+            Vector3 axes[3];
+            body->GetAxes(axes);
+            float halfExtentY = fabsf(axes[0].y) * (body->size.x * 0.5f)
+                              + fabsf(axes[1].y) * (body->size.y * 0.5f)
+                              + fabsf(axes[2].y) * (body->size.z * 0.5f);
             float bottomY = body->position.y - halfExtentY;
             if (bottomY < 0.0f) {
                 body->position.y -= bottomY; // Y=0まで押し上げる

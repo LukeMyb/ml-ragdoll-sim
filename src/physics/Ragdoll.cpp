@@ -56,7 +56,9 @@ void Ragdoll::Build(Vector3 startPosition) {
     RigidBody* rightThigh = CreateBody(Vector3Add(startPosition, Vector3{ 0.3f, -1.5f, 0.0f}), Vector3{0.4f, 1.5f, 0.4f}, 1.0f);
     RigidBody* rightShin  = CreateBody(Vector3Add(startPosition, Vector3{ 0.3f, -3.0f, 0.0f}), Vector3{0.3f, 1.5f, 0.3f}, 1.0f);
 
-    // --- 関節（ジョイント）の作成 ---
+    // 胴体に初期角速度を与えて斜めに倒れ落ちるようにする
+    torso->angularVelocity = Vector3{ 0.0f, 0.0f, 4.0f };
+
     // 股関節（-45度〜45度）
     CreateHingeJoint(torso, leftThigh,  Vector3Add(startPosition, Vector3{-0.3f, -0.75f, 0.0f}), -45.0f, 45.0f);
     CreateHingeJoint(torso, rightThigh, Vector3Add(startPosition, Vector3{ 0.3f, -0.75f, 0.0f}), -45.0f, 45.0f);
